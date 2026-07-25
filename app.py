@@ -110,31 +110,52 @@ You are SEKTA GOLD — Gold Standard."""
     },
 }
 
-# --- SECRETS & CLIENT ---
-def get_openai_key():
-    # Priority: st.secrets > env > sidebar input
+# --- PROVIDERS (free options!) ---
+PROVIDERS = {
+    "Groq (FREE)": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"],
+        "default_model": "llama-3.3-70b-versatile",
+        "signup": "https://console.groq.com — free, no card, instant",
+        "env_key": "GROQ_API_KEY",
+    },
+    "Google Gemini (FREE)": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "models": ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"],
+        "default_model": "gemini-2.0-flash",
+        "signup": "https://aistudio.google.com/apikey — free, no card",
+        "env_key": "GEMINI_API_KEY",
+    },
+    "OpenAI (paid)": {
+        "base_url": None,
+        "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
+        "default_model": "gpt-4o",
+        "signup": "https://platform.openai.com/api-keys",
+        "env_key": "OPENAI_API_KEY",
+    },
+}
+
+def get_provider_key(env_key):
     key = None
     try:
-        key = st.secrets["OPENAI_API_KEY"]
+        key = st.secrets[env_key]
     except Exception:
         pass
     if not key:
-        key = os.getenv("OPENAI_API_KEY")
+        key = os.getenv(env_key, "")
     if not key:
-        key = st.session_state.get("openai_key_input", "")
+        key = st.session_state.get("api_key_input", "")
     return key
 
-def get_tavily_key():
-    try:
-        return st.secrets["TAVILY_API_KEY"]
-    except Exception:
-        return os.getenv("TAVILY_API_KEY", "")
-
 def get_client():
-    key = get_openai_key()
-    if not key or "YOUR_NEW_KEY" in key or "4R35dzYfeSafQbROrcX1arD" in key:
+    provider_name = st.session_state.get("provider", "Groq (FREE)")
+    provider = PROVIDERS[provider_name]
+    key = get_provider_key(provider["env_key"])
+    if not key or "YOUR_" in key:
         return None, key
     from openai import OpenAI
+    if provider["base_url"]:
+        return OpenAI(api_key=key, base_url=provider["base_url"]), key
     return OpenAI(api_key=key), key
 
 # --- TOOLS ---
@@ -166,10 +187,13 @@ def tool_web_search(query: str, num=5):
     return results
 
 def tool_generate_image(prompt: str, size="1024x1024"):
-    client, _ = get_client()
-    if not client:
-        return None, "No OpenAI key"
+    # Image gen only works with OpenAI - try OpenAI key directly
+    openai_key = get_provider_key("OPENAI_API_KEY")
+    if not openai_key or "YOUR_" in openai_key:
+        return None, "Image generation requires an OpenAI API key (DALL-E). Add OPENAI_API_KEY in Secrets."
     try:
+        from openai import OpenAI
+        client = OpenAI(api_key=openai_key)
         res = client.images.generate(model="dall-e-3", prompt=prompt, size=size, quality="hd", n=1)
         url = res.data[0].url
         return url, getattr(res.data[0], 'revised_prompt', prompt)
@@ -228,29 +252,26 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
     
-    # Security warning
-    st.markdown("""
-    <div class='gold-card' style='margin-bottom:12px'>
-      <div style='color:#FFC700;font-family:monospace;font-weight:700;font-size:12px;margin-bottom:4px'>⚠️ SECURITY</div>
-      <div style='font-size:11px;line-height:1.4'>If you leaked key starting <code>sk-proj-4R35...</code>, revoke at <a href='https://platform.openai.com/api-keys' target='_blank'>platform.openai.com/api-keys</a> NOW, then set new key in Streamlit Secrets.</div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Provider selector
+    st.markdown("<div style='font-size:11px;font-family:monospace;color:#8A8A90;letter-spacing:1px;margin-bottom:8px'>PROVIDER • CHOOSE AI</div>", unsafe_allow_html=True)
+    provider_names = list(PROVIDERS.keys())
+    provider = st.selectbox("Provider", provider_names, index=0, label_visibility="collapsed", key="provider_select")
+    st.session_state.provider = provider
+    prov = PROVIDERS[provider]
+    st.markdown(f"<div class='gold-card'><div style='font-weight:700;font-size:13px'>{provider}</div><div style='font-size:11px;color:#8A8A90;margin-top:4px'>Get key: {prov['signup']}</div></div>", unsafe_allow_html=True)
 
-    # API Key input if not in secrets
-    openai_key = get_openai_key()
-    if not openai_key or "YOUR_NEW_KEY" in openai_key:
-        st.warning("🔑 No OpenAI key found. Add in Streamlit Secrets or below:")
-        key_input = st.text_input("OpenAI API Key", type="password", placeholder="sk-proj-... (new key after revoke)")
+    # API Key input
+    api_key = get_provider_key(prov["env_key"])
+    if not api_key or "YOUR_" in api_key:
+        st.warning(f"🔑 No key for {provider}. Add below or in Streamlit Secrets ({prov['env_key']}):")
+        key_input = st.text_input(f"{provider} API Key", type="password", placeholder=f"Paste your key here...")
         if key_input:
-            st.session_state.openai_key_input = key_input
+            st.session_state.api_key_input = key_input
             st.rerun()
     else:
-        if "4R35dzYfeSafQbROrcX1arD" in openai_key:
-            st.error("🚨 You are using the LEAKED compromised key! Revoke it and use new one in Secrets.")
-        else:
-            st.success(f"✅ Key set • {openai_key[:7]}...{openai_key[-4:]}")
+        st.success(f"✅ Key set • {api_key[:7]}...{api_key[-4:]}")
         if st.button("🔄 Clear Key", use_container_width=True):
-            st.session_state.openai_key_input = ""
+            st.session_state.api_key_input = ""
             st.rerun()
 
     st.divider()
@@ -272,7 +293,11 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Model:**")
-    st.session_state.model = st.selectbox("Model", ["gpt-4o","gpt-4o-mini","gpt-4-turbo","o1-mini","o1-preview"], label_visibility="collapsed", index=0)
+    current_provider = st.session_state.get("provider", "Groq (FREE)")
+    provider_models = PROVIDERS[current_provider]["models"]
+    default_model = PROVIDERS[current_provider]["default_model"]
+    default_idx = provider_models.index(default_model) if default_model in provider_models else 0
+    st.session_state.model = st.selectbox("Model", provider_models, label_visibility="collapsed", index=default_idx)
     
     if st.button("🗑️ New Chat", use_container_width=True):
         # save current to history
@@ -367,7 +392,7 @@ if actual_prompt:
     # Check key
     client, key = get_client()
     if not client:
-        st.error("❌ No valid OpenAI API key. Add OPENAI_API_KEY in Streamlit Cloud → App → Settings → Secrets, or use sidebar input. IMPORTANT: Use NEW key after revoking leaked one.")
+        st.error(f"❌ No valid API key for {st.session_state.get('provider', 'Groq (FREE)')}. Add your key in the sidebar or in Streamlit Secrets.")
         st.stop()
     
     # Handle memory extraction: "remember that..."
@@ -546,7 +571,7 @@ if actual_prompt:
             except Exception as e:
                 err_msg = str(e)
                 if "api_key" in err_msg.lower() or "401" in err_msg:
-                    st.error(f"🔑 OpenAI API key error: {err_msg}. Check key in Streamlit Secrets. Revoke old leaked key!")
+                    st.error(f"🔑 API key error: {err_msg}. Check your key in the sidebar or Streamlit Secrets.")
                 else:
                     st.error(f"Error: {err_msg}")
                     full_response = f"Sorry, error: {err_msg[:500]}"
