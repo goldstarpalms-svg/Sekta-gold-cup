@@ -484,13 +484,15 @@ if actual_prompt:
                 }
             ]
             
+            # Only use function calling with OpenAI — Groq/Gemini don't support it reliably
+            use_tools = st.session_state.get("provider", "Groq (FREE)") == "OpenAI (paid)"
+            
             try:
-                # Initial streaming attempt
                 stream = client.chat.completions.create(
                     model=st.session_state.model,
                     messages=openai_messages,
-                    tools=tools,
-                    tool_choice="auto",
+                    tools=tools if use_tools else None,
+                    tool_choice="auto" if use_tools else None,
                     stream=True,
                     temperature=0.7,
                     max_tokens=3000
