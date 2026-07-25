@@ -1,632 +1,635 @@
 """
-SEKTA GOLD CUP — Production AI Platform
-Free tools: Web Search, Image Gen, Code Interpreter, URL Reader,
-Wikipedia, Charts, QR Codes, File Analysis, Voice
+SEKTA GOLD - Cyber Shield
+=========================
+
+A defensive security operations dashboard. DEFENSIVE USE ONLY - no offensive
+tooling, scanning, exploitation, or attack capability is included or intended.
+
+What it does (each is a standard blue-team control):
+  * Slack alerting              - central notifier used by the other tools
+  * Honeypot canary generator   - decoy files + a monitor script that alerts
+                                  on access (host-side, you deploy it)
+  * IP geolocation & threat map - enrich attacker IPs via ipapi.co
+  * Fail2Ban config generator   - build jail + filter rules from log patterns
+  * Cloudflare WAF rule builder - compose firewall expressions
+  * File integrity monitor      - SHA-256 baselines + change detection
+  * Encrypted backup generator  - tar + gpg backup script with retention
+  * auth.log analyzer           - detect brute-force SSH attempts
+
+Design notes:
+  * The Streamlit app is a GENERATOR + DASHBOARD. It never runs subprocess
+    commands on the host. Scripts it produces are plain text that you read,
+    review, and deploy on your own server.
+  * Secrets (Slack webhook URL, ipapi key) are read from
+    st.secrets / environment variables, never hardcoded, and masked in the UI.
 """
 
+import os
+import re
+import io
+import json
+import time
+import base64
+import hashlib
+import zipfile
+from datetime import datetime, timezone
+from collections import Counter, defaultdict
+
+import pandas as pd
 import streamlit as st
-import os, json, base64, time, uuid, re, io, sys, traceback, subprocess, tempfile
-from datetime import datetime
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="Sekta AI", page_icon="⭐", layout="wide", initial_sidebar_state="expanded")
+try:
+    import httpx  # already in requirements.txt
+    _HAS_HTTPX = True
+except Exception:  # pragma: no cover - optional fallback
+    _HAS_HTTPX = False
 
-# --- CSS ---
-st.markdown("""
+try:
+    import plotly.express as px  # already in requirements.txt
+    _HAS_PLOTLY = True
+except Exception:  # pragma: no cover
+    _HAS_PLOTLY = False
+
+
+# --------------------------------------------------------------------------
+# PAGE CONFIG
+# --------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Sekta Gold - Cyber Shield",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif; }
-.stApp { background: #09090b; color: #e4e4e7; }
-[data-testid="stSidebar"] { background: #09090b; border-right: 1px solid #27272a; }
-[data-testid="stHeader"] { background: rgba(9,9,11,0.85); backdrop-filter: blur(12px); }
-.stChatMessage { border-radius: 16px !important; }
-div[data-testid="stChatMessage"]:nth-child(odd) { background: #18181b; border: 1px solid #27272a; }
-div[data-testid="stChatMessage"]:nth-child(even) { background: #0f0f12; border: 1px solid #1e1e22; }
-div[data-testid="stChatMessageAvatarUser"] { background: linear-gradient(135deg, #6366f1, #8b5cf6) !important; }
-div[data-testid="stChatMessageAvatarAssistant"] { background: linear-gradient(135deg, #f59e0b, #f97316) !important; }
-[data-testid="stChatInput"] { background: #18181b; border: 1px solid #27272a; border-radius: 16px; }
-[data-testid="stChatInput"] textarea { color: #e4e4e7; }
-[data-testid="stChatInput"] textarea::placeholder { color: #52525b; }
-.stButton > button { border-radius: 10px; font-weight: 500; transition: all 0.2s; }
-.stButton > button:hover { transform: translateY(-1px); }
-.card { background: #18181b; border: 1px solid #27272a; border-radius: 12px; padding: 16px; }
-a { color: #f59e0b !important; }
+.stApp { background: #0A0A0B; color: #E5E5E5; }
+[data-testid="stSidebar"] { background: #0A0A0B; border-right: 1px solid #1f1f22; }
+[data-testid="stHeader"] { background: rgba(10,10,11,0.85); backdrop-filter: blur(12px); }
+h1, h2, h3 { color: #fff; letter-spacing: -0.02em; }
+.kicker { color: #FFC700; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; font-size: 12px; }
+.card { background: #141415; border: 1px solid #1f1f22; border-radius: 14px; padding: 18px; }
+.mono { font-family: 'JetBrains Mono', monospace; }
+code, pre { font-family: 'JetBrains Mono', monospace !important; }
+.stButton > button { border-radius: 10px; font-weight: 500; }
+a { color: #FFC700 !important; }
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
 [data-testid="stStatusWidget"] { display: none; }
-.tool-bar { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
-.tool-chip { background: #18181b; border: 1px solid #27272a; border-radius: 10px; padding: 8px 14px; font-size: 12px; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 6px; }
-.tool-chip:hover { border-color: #3f3f46; background: #1e1e22; }
-.tool-chip .icon { font-size: 16px; }
+.tag-ok    { color: #34d399; font-weight: 600; }
+.tag-warn  { color: #fbbf24; font-weight: 600; }
+.tag-bad   { color: #f87171; font-weight: 600; }
+.defensive-banner { background: #14201a; border: 1px solid #1f3a2b; border-radius: 10px; padding: 10px 14px; color: #86efac; font-size: 13px; }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
-# --- PROVIDERS ---
-PROVIDERS = {
-    "Groq (Free)": {"icon": "⚡", "base_url": "https://api.groq.com/openai/v1",
-        "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
-        "default_model": "llama-3.3-70b-versatile", "signup": "console.groq.com", "env_key": "GROQ_API_KEY"},
-    "Gemini (Free)": {"icon": "💎", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "models": ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"],
-        "default_model": "gemini-2.0-flash", "signup": "aistudio.google.com/apikey", "env_key": "GEMINI_API_KEY"},
-    "OpenAI (Paid)": {"icon": "🧠", "base_url": None,
-        "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
-        "default_model": "gpt-4o", "signup": "platform.openai.com", "env_key": "OPENAI_API_KEY"},
-}
 
-# --- AGENTS ---
-AGENTS = {
-    "sekta-omni": {"name": "Sekta Omni", "icon": "🤖", "color": "#f59e0b",
-        "desc": "All-purpose assistant with tools",
-        "prompt": "You are Sekta AI — a helpful, concise assistant. You have access to web search, image generation, code execution, Wikipedia, URL reading, and file analysis. When the user asks you to do something, USE your tools proactively. Be direct. Current date: 2026-07-25."},
-    "code-titan": {"name": "Code Titan", "icon": "💻", "color": "#6366f1",
-        "desc": "Engineer — writes & runs code",
-        "prompt": "You are Code Titan — a Staff Engineer. Write production code. When asked to code, write it AND use the code runner to execute and test it. Show output. Fix bugs iteratively."},
-    "research-oracle": {"name": "Research Oracle", "icon": "🔍", "color": "#10b981",
-        "desc": "Deep research with sources",
-        "prompt": "You are Research Oracle. For ANY factual question, use web search and Wikipedia. Cite sources [1](url). Structure: TL;DR → Key Findings → Deep Dive."},
-    "creative-god": {"name": "Creative God", "icon": "🎨", "color": "#ec4899",
-        "desc": "Content & visuals creator",
-        "prompt": "You are Creative God — award-winning creative director. For images, use the image generator with detailed prompts. Give 3 variations: Safe, Bold, Unhinged."},
-    "data-wizard": {"name": "Data Wizard", "icon": "📊", "color": "#8b5cf6",
-        "desc": "Data analysis & charts",
-        "prompt": "You are Data Wizard. When given data, generate Python code and run it. Create charts with matplotlib/plotly. Show insights, not just numbers."},
-    "study-buddy": {"name": "Study Buddy", "icon": "📚", "color": "#06b6d4",
-        "desc": "Feynman-style tutor",
-        "prompt": "You are Study Buddy. Teach via Analogy → Simple → Example → Quiz. Use web search for facts. Make learning addictive."},
-    "business-shark": {"name": "Business Shark", "icon": "🦈", "color": "#f97316",
-        "desc": "Startup strategist",
-        "prompt": "You are Business Shark. Evaluate ideas via Pain/Market/Moat/Money. Search for real market data. Be brutally honest with metrics."},
-    "therapist-v2": {"name": "Therapist", "icon": "💛", "color": "#eab308",
-        "desc": "Supportive listener",
-        "prompt": "You are Therapist — warm, empathetic, non-judgmental. Validate feelings. If crisis, provide resources (US 988). AI disclaimer."},
-}
-
-# =====================================================================
-# TOOLS — All free, no API keys required
-# =====================================================================
-
-def get_key(env_key):
-    key = None
-    try: key = st.secrets[env_key]
-    except Exception: pass
-    if not key: key = os.getenv(env_key, "")
-    if not key: key = st.session_state.get("manual_key", "")
-    return key
-
-def get_client():
-    prov = PROVIDERS[st.session_state.get("provider", "Groq (Free)")]
-    key = get_key(prov["env_key"])
-    if not key: return None
-    from openai import OpenAI
-    if prov["base_url"]:
-        return OpenAI(api_key=key, base_url=prov["base_url"])
-    return OpenAI(api_key=key)
-
-def get_tavily_key():
-    try: return st.secrets["TAVILY_API_KEY"]
-    except Exception: return os.getenv("TAVILY_API_KEY", "")
-
-# --- Tool 1: Web Search (DuckDuckGo free + Tavily optional) ---
-def tool_web_search(query, num=5):
-    # Try Tavily first (optional paid)
-    tavily_key = get_tavily_key()
-    if tavily_key:
-        try:
-            from tavily import TavilyClient
-            res = TavilyClient(api_key=tavily_key).search(query, search_depth="advanced", max_results=num)
-            out = ""
-            for i, r in enumerate(res.get("results", [])[:num]):
-                out += f"**[{i+1}] [{r.get('title')}]({r.get('url')})**\n{r.get('content','')[:400]}\n\n"
-            if out: return out
-        except Exception: pass
-
-    # Free DuckDuckGo
+# --------------------------------------------------------------------------
+# SHARED UTILITIES
+# --------------------------------------------------------------------------
+def load_secret(name: str, default=None):
+    """Read a secret from Streamlit secrets first, then environment."""
     try:
-        from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=num))
-            if results:
-                out = f"🔍 **Web search results for:** *{query}*\n\n"
-                for i, r in enumerate(results):
-                    out += f"**[{i+1}] [{r.get('title','')}]({r.get('href','')})**\n{r.get('body','')[:300]}\n\n"
-                return out
-    except Exception as e:
+        if name in st.secrets:
+            return st.secrets[name]
+    except Exception:
         pass
+    return os.environ.get(name, default)
 
-    return f"No search results for '{query}'. Try adding TAVILY_API_KEY for better search."
 
-# --- Tool 2: Image Generation (Pollinations.ai — 100% free, no key) ---
-def tool_generate_image(prompt, size="1024x1024"):
+def mask_secret(value: str, keep: int = 10) -> str:
+    """Partially mask a secret for safe display."""
+    if not value:
+        return "(not set)"
+    if len(value) <= keep:
+        return "*" * len(value)
+    return value[:keep] + "…" + "*" * 6
+
+
+def utcnow() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def download_text(filename: str, text: str, label: str = "Download"):
+    """Render a download button for a text payload."""
+    st.download_button(
+        label=label,
+        data=text.encode("utf-8"),
+        file_name=filename,
+        mime="text/plain",
+    )
+
+
+def send_slack(message: str, webhook: str | None = None) -> tuple[bool, str]:
+    """POST a message to a Slack incoming webhook. Returns (ok, detail).
+
+    Purely outbound notification - no inbound capability.
+    """
+    webhook = webhook or load_secret("SLACK_WEBHOOK_URL")
+    if not webhook:
+        return False, "No Slack webhook configured. Set SLACK_WEBHOOK_URL in Streamlit secrets or .env."
+    if not webhook.startswith("https://hooks.slack.com/"):
+        return False, "Refusing to send: webhook does not look like a Slack incoming webhook URL."
+    if not _HAS_HTTPX:
+        return False, "httpx is not installed (add it to requirements.txt)."
     try:
-        import httpx
-        # Pollinations.ai — free, no API key, no signup
-        encoded = prompt.replace(" ", "%20").replace("\n", "%20")
-        w, h = size.split("x") if "x" in size else ("1024", "1024")
-        url = f"https://image.pollinations.ai/prompt/{encoded}?width={w}&height={h}&nologo=true&seed={int(time.time())}"
-        return url, prompt
-    except Exception as e:
-        return None, str(e)
+        with httpx.Client(timeout=15.0) as client:
+            r = client.post(webhook, json={"text": message})
+        if r.status_code == 200 and r.text.strip() == "ok":
+            return True, "Delivered to Slack."
+        return False, f"Slack responded HTTP {r.status_code}: {r.text[:200]}"
+    except Exception as e:  # noqa: BLE001
+        return False, f"Request failed: {e}"
 
-# --- Tool 3: Code Interpreter (runs Python locally) ---
-def tool_run_code(code, timeout=15):
-    """Execute Python code in isolated subprocess, capture output."""
-    # Safety: block dangerous operations
-    blacklist = ["os.system", "subprocess.call", "subprocess.Popen", "shutil.rmtree",
-                 "import socket", "open('/etc", "open('/proc", "__import__('os').system"]
-    for b in blacklist:
-        if b in code:
-            return f"⛔ Blocked: `{b}` not allowed for safety."
 
-    # Wrap code to capture output
-    wrapped = f"""
-import sys, io, math, json, random, datetime, collections, re, itertools
-_old_stdout = sys.stdout
-sys.stdout = io.StringIO()
-try:
-    import pandas as pd
-    import numpy as np
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-except:
-    pass
-try:
-{chr(10).join('    ' + line for line in code.split(chr(10)))}
-except Exception as e:
-    import traceback
-    traceback.print_exc()
-output = sys.stdout.getvalue()
-_old_stdout.write(output)
-"""
+def geolocate_ip(ip: str, api_key: str | None = None) -> dict | None:
+    """Look up one IP via ipapi.co. Returns parsed dict or None on failure."""
+    ip = (ip or "").strip()
+    if not ip:
+        return None
+    url = f"https://ipapi.co/{ip}/json/"
+    params = {}
+    if api_key:
+        params["key"] = api_key
+    if not _HAS_HTTPX:
+        return None
     try:
-        result = subprocess.run(
-            ["python3", "-c", wrapped],
-            capture_output=True, text=True, timeout=timeout,
-            cwd=tempfile.mkdtemp()
-        )
-        out = result.stdout + result.stderr
-        return out[:5000] if out.strip() else "✅ Code ran successfully (no output — use print() to see results)"
-    except subprocess.TimeoutExpired:
-        return f"⏱️ Code timed out after {timeout}s"
-    except Exception as e:
-        return f"❌ Error: {e}"
-
-# --- Tool 4: URL Reader (fetch + extract text) ---
-def tool_read_url(url):
-    try:
-        import httpx
-        from bs4 import BeautifulSoup
-        with httpx.Client(timeout=15, follow_redirects=True) as c:
-            resp = c.get(url, headers={"User-Agent": "Mozilla/5.0"})
-            soup = BeautifulSoup(resp.text, "lxml")
-            # Remove scripts and styles
-            for tag in soup(["script", "style", "nav", "footer", "header"]):
-                tag.decompose()
-            text = soup.get_text(separator="\n", strip=True)
-            title = soup.title.string if soup.title else url
-            return f"📄 **{title}**\n\n{text[:8000]}"
-    except Exception as e:
-        return f"❌ Could not read URL: {e}"
-
-# --- Tool 5: Wikipedia ---
-def tool_wikipedia(query):
-    try:
-        import wikipedia
-        results = wikipedia.search(query, results=3)
-        if not results:
-            return f"No Wikipedia results for '{query}'"
-        page = wikipedia.page(results[0], auto_suggest=False)
-        summary = wikipedia.summary(results[0], sentences=5)
-        return f"📖 **[{page.title}]({page.url})** (Wikipedia)\n\n{summary}\n\n*Full article: {page.url}*"
-    except Exception as e:
-        # Fallback to API
-        try:
-            import httpx
-            with httpx.Client(timeout=10) as c:
-                data = c.get(f"https://en.wikipedia.org/api/rest_v1/page/summary/{query.replace(' ','_')}").json()
-                if data.get("extract"):
-                    return f"📖 **{data.get('title', query)}** (Wikipedia)\n\n{data['extract']}\n\n{data.get('content_urls',{}).get('desktop',{}).get('page','')}"
-        except Exception: pass
-        return f"No Wikipedia article found for '{query}'"
-
-# --- Tool 6: QR Code Generator ---
-def tool_qr_code(data):
-    try:
-        import qrcode
-        img = qrcode.make(data)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode()
-        return f"data:image/png;base64,{b64}"
-    except Exception as e:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.get(url, params=params)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if data.get("error"):
+            return None
+        return data
+    except Exception:  # noqa: BLE001
         return None
 
-# --- Tool 7: Chart Generator ---
-def tool_make_chart(data_str, chart_type="bar", title="Chart"):
-    try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        plt.style.use('dark_background')
-        fig, ax = plt.subplots(figsize=(8, 5))
 
-        # Try to parse as JSON
-        try:
-            data = json.loads(data_str)
-        except:
-            data = {"data": data_str}
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
-        if isinstance(data, dict):
-            labels = list(data.keys())
-            values = [float(v) if isinstance(v, (int, float)) else len(str(v)) for v in data.values()]
-        else:
-            return "Provide data as JSON: {\"label\": value, ...}"
 
-        colors = ["#f59e0b", "#6366f1", "#10b981", "#ec4899", "#8b5cf6", "#06b6d4", "#f97316", "#eab308"]
+def kv_card(label: str, value, sub: str = ""):
+    st.markdown(
+        f"""<div class="card"><div class="kicker">{label}</div>
+        <div style="font-size:26px;font-weight:700;color:#fff;margin-top:4px">{value}</div>
+        <div style="color:#9ca3af;font-size:12px;margin-top:2px">{sub}</div></div>""",
+        unsafe_allow_html=True,
+    )
 
-        if chart_type == "bar":
-            ax.bar(labels, values, color=colors[:len(labels)])
-        elif chart_type == "pie":
-            ax.pie(values, labels=labels, colors=colors[:len(labels)], autopct='%1.1f%%')
-        elif chart_type == "line":
-            ax.plot(labels, values, color="#f59e0b", marker='o', linewidth=2)
 
-        ax.set_title(title, fontsize=14, fontweight='bold', color='#fafafa')
-        plt.xticks(rotation=45, ha='right')
-        plt.tight_layout()
+# --------------------------------------------------------------------------
+# SECTIONS
+# --------------------------------------------------------------------------
+def header(title: str, subtitle: str):
+    st.markdown(f'<div class="kicker">🛡️ Sekta Gold · Cyber Shield</div>', unsafe_allow_html=True)
+    st.markdown(f"## {title}")
+    st.caption(subtitle)
 
-        buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='#09090b')
-        plt.close(fig)
-        b64 = base64.b64encode(buf.getvalue()).decode()
-        return f"data:image/png;base64,{b64}"
-    except Exception as e:
-        return f"Chart error: {e}"
 
-# --- Tool 8: File Analysis ---
-def parse_file(f):
-    name = f.name
-    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-    try:
-        if ext == "pdf":
-            from PyPDF2 import PdfReader
-            return "".join((p.extract_text() or "") for p in PdfReader(f).pages[:20])[:15000]
-        elif ext in ("xlsx", "xls", "csv"):
-            import pandas as pd
-            df = pd.read_csv(f) if ext == "csv" else pd.read_excel(f)
-            analysis = f"📊 **{name}** — {df.shape[0]} rows × {df.shape[1]} columns\n\n"
-            analysis += f"**Columns:** {', '.join(df.columns.tolist())}\n\n"
-            analysis += f"**Preview:**\n```\n{df.head(10).to_string()}\n```\n\n"
-            analysis += f"**Stats:**\n```\n{df.describe().to_string()}\n```"
-            return analysis
-        elif ext == "docx":
-            from docx import Document
-            return "\n".join(p.text for p in Document(f).paragraphs)[:15000]
-        elif ext in ("png", "jpg", "jpeg", "webp", "gif"):
-            return "[IMAGE ATTACHED — describe what you see and answer questions about it]"
-        else:
-            return f.read().decode("utf-8", errors="ignore")[:15000]
-    except Exception as e:
-        return f"Error reading {name}: {e}"
+def section_overview():
+    header("Operations Overview", "Status of integrations and quick navigation.")
 
-# --- Tool Dispatcher (detects what user wants) ---
-TOOLS_DESC = """Available tools:
-- 🔍 **search** (query) — Web search via DuckDuckGo
-- 🖼️ **image** (prompt) — Generate image via Pollinations AI (free)
-- 💻 **code** (python) — Run Python code
-- 🌐 **read_url** (url) — Read & extract any webpage
-- 📖 **wiki** (query) — Wikipedia lookup
-- 📊 **chart** (data, type) — Generate chart from JSON data
-- 📎 **files** — Analyze uploaded files
-- 🔳 **qr** (data) — Generate QR code"""
+    slack_on = bool(load_secret("SLACK_WEBHOOK_URL"))
+    ipapi_key = bool(load_secret("IPAPI_KEY"))
 
-def detect_and_run_tool(user_msg, lower):
-    """Check if user message triggers a tool, return (tool_name, result) or None."""
-    # Web search triggers
-    if any(k in lower for k in ["search for", "search the", "look up", "google", "find me", "what's the latest", "latest news", "what is happening"]):
-        query = re.sub(r"(search for|search|look up|google|find me|what's the latest|latest news about|what is happening with)\s*", "", lower).strip()
-        if query and len(query) > 2:
-            return "🔍 Web Search", tool_web_search(query)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        kv_card("Slack Alerting", "ON" if slack_on else "OFF", mask_secret(load_secret("SLACK_WEBHOOK_URL")))
+    with c2:
+        kv_card("ipapi.co Key", "SET" if ipapi_key else "FREE TIER", "Geolocation enrichment")
+    with c3:
+        kv_card("Mode", "Defensive", "No offensive capability")
+    with c4:
+        kv_card("Local Time", utcnow().split(" ")[1], "UTC")
 
-    # Wikipedia triggers
-    if any(k in lower for k in ["wikipedia", "who is", "who was", "what is a ", "what are ", "define ", "tell me about"]):
-        query = re.sub(r"(wikipedia|who is|who was|what is a|what are|define|tell me about)\s*", "", lower).strip()
-        if query and len(query) > 2:
-            return "📖 Wikipedia", tool_wikipedia(query)
+    st.markdown('<div class="defensive-banner">🟢 <b>Defensive-only.</b> This dashboard generates detection, alerting, and hardening artifacts. It performs no scanning, exploitation, or attack against any system.</div>', unsafe_allow_html=True)
 
-    # URL reader triggers
-    urls = re.findall(r'https?://[^\s]+', user_msg)
-    if urls and any(k in lower for k in ["read", "summarize", "what's on", "open", "check this", "analyze url"]):
-        return "🌐 URL Reader", tool_read_url(urls[0])
-
-    # Code runner triggers
-    code_match = re.search(r'```python\s*\n(.*?)```', user_msg, re.DOTALL)
-    if code_match and any(k in lower for k in ["run", "execute", "test", "try this"]):
-        return "💻 Code Runner", tool_run_code(code_match.group(1))
-
-    # QR code triggers
-    qr_match = re.search(r'(?:qr|qr code)\s+(?:for|of|code)\s+(.+)', lower)
-    if qr_match:
-        qr_data = tool_qr_code(qr_match.group(1).strip())
-        if qr_data:
-            return "🔳 QR Code", f"![QR Code]({qr_data})"
-
-    # Chart triggers
-    if any(k in lower for k in ["make a chart", "create a chart", "bar chart", "pie chart", "plot this"]):
-        return "📊 Chart", "Provide data as JSON like: `{\"Jan\": 100, \"Feb\": 150, \"Mar\": 200}` and I'll generate a chart."
-
-    # Image generation triggers
-    if any(k in lower for k in ["generate image", "create image", "make image", "image of", "generate a", "create a", "draw", "picture of", "photo of", "logo", "illustration"]):
-        # Extract the prompt (remove trigger words)
-        prompt_text = user_msg
-        for t in ["generate image of", "generate image", "create image of", "create image", "make image of", "make image", "generate a", "create a", "draw a", "draw", "picture of", "photo of", "logo for", "logo", "illustration of", "illustration"]:
-            if t in lower:
-                idx = lower.index(t)
-                prompt_text = user_msg[idx + len(t):].strip()
-                break
-        if prompt_text and len(prompt_text) > 3:
-            url, revised = tool_generate_image(prompt_text)
-            if url:
-                # Return URL directly — will be displayed as image
-                return "🖼️ Image Gen", url
-
-    return None, None
-
-def safe_avatar(icon):
-    """Ensure emoji is valid for Streamlit avatars."""
-    valid = {"🤖","🏆","💻","🔍","🎨","📊","📚","🦈","💛","⚡","💎","🧠","👤",
-             "⭐","🌟","💡","🚀","🎯","🔥","✨","📝","💬","🙋","🧑","👨","👩"}
-    return icon if icon in valid else "🤖"
-
-# =====================================================================
-# SESSION STATE
-# =====================================================================
-for k, v in {
-    "messages": [], "chat_history": [], "chat_id": str(uuid.uuid4())[:8],
-    "file_ctx": "", "memories": [], "model": "llama-3.3-70b-versatile",
-    "provider": "Groq (Free)", "agent": "sekta-omni", "manual_key": "",
-}.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
-
-# =====================================================================
-# SIDEBAR
-# =====================================================================
-with st.sidebar:
-    st.markdown("""
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px;padding:4px 0">
-        <div style="width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#f59e0b,#f97316);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;color:#000">S</div>
-        <div>
-            <div style="font-size:18px;font-weight:700;letter-spacing:-0.03em;color:#fafafa">Sekta AI</div>
-            <div style="font-size:11px;color:#52525b;font-family:'JetBrains Mono';margin-top:-2px">v2.0 · Cloud</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Provider
-    st.markdown("<div style='font-size:11px;font-weight:600;color:#52525b;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px'>Provider</div>", unsafe_allow_html=True)
-    prov_names = list(PROVIDERS.keys())
-    prov = st.radio("Provider", prov_names, label_visibility="collapsed",
-        format_func=lambda x: f"{PROVIDERS[x]['icon']}  {x}",
-        index=prov_names.index(st.session_state.provider), key="prov_radio")
-    st.session_state.provider = prov
-    p = PROVIDERS[prov]
-
-    key = get_key(p["env_key"])
-    if not key:
-        st.markdown(f"<div class='card' style='margin:12px 0'><div style='font-size:12px;color:#f59e0b;font-weight:600;margin-bottom:6px'>🔑 API Key Required</div><div style='font-size:11px;color:#71717a'>Get free key → <b>{p['signup']}</b></div></div>", unsafe_allow_html=True)
-        manual = st.text_input("API Key", type="password", placeholder="Paste key...", label_visibility="collapsed")
-        if manual:
-            st.session_state.manual_key = manual
-            st.rerun()
-    else:
-        st.markdown(f"<div style='font-size:11px;color:#22c55e;margin:8px 0'>✓ Connected · <code style='color:#52525b;background:#1e1e22;padding:2px 6px;border-radius:4px'>{key[:6]}…{key[-4:]}</code></div>", unsafe_allow_html=True)
-
-    st.markdown("<div style='height:1px;background:#27272a;margin:16px 0'></div>", unsafe_allow_html=True)
-
-    # Agent
-    st.markdown("<div style='font-size:11px;font-weight:600;color:#52525b;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px'>Agent</div>", unsafe_allow_html=True)
-    agent_options = list(AGENTS.keys())
-    agent_idx = agent_options.index(st.session_state.agent) if st.session_state.agent in agent_options else 0
-    agent = st.selectbox("Agent", agent_options, index=agent_idx, label_visibility="collapsed",
-        format_func=lambda x: f"{AGENTS[x]['icon']}  {AGENTS[x]['name']}")
-    st.session_state.agent = agent
-    a = AGENTS[agent]
-    st.markdown(f"<div class='card'><div style='font-weight:600;font-size:13px;color:#fafafa'>{a['icon']} {a['name']}</div><div style='font-size:12px;color:#71717a;margin-top:4px'>{a['desc']}</div></div>", unsafe_allow_html=True)
-
-    st.markdown("<div style='height:1px;background:#27272a;margin:16px 0'></div>", unsafe_allow_html=True)
-
-    # Model
-    st.markdown("<div style='font-size:11px;font-weight:600;color:#52525b;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px'>Model</div>", unsafe_allow_html=True)
-    model_list = p["models"]
-    m_idx = model_list.index(p["default_model"]) if p["default_model"] in model_list else 0
-    st.session_state.model = st.selectbox("Model", model_list, index=m_idx, label_visibility="collapsed")
-
-    st.markdown("<div style='height:1px;background:#27272a;margin:16px 0'></div>", unsafe_allow_html=True)
-
-    # Tools info
-    st.markdown("<div style='font-size:11px;font-weight:600;color:#52525b;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px'>Built-in Tools</div>", unsafe_allow_html=True)
-    tools_list = [
-        ("🔍", "Web Search", "DuckDuckGo (free)"),
-        ("🖼️", "Image Gen", "Pollinations AI (free)"),
-        ("💻", "Code Runner", "Python sandbox"),
-        ("🌐", "URL Reader", "Any webpage"),
-        ("📖", "Wikipedia", "Knowledge base"),
-        ("📊", "Charts", "Matplotlib"),
-        ("📎", "File Analysis", "PDF, CSV, DOCX"),
-        ("🔳", "QR Codes", "Instant generation"),
+    st.markdown("### What each tool does")
+    rows = [
+        ("Slack Alerts", "Central notifier - test and verify your webhook before relying on it."),
+        ("Honeypot Canaries", "Generate decoy files + a host monitor script that alerts Slack when touched."),
+        ("IP Geolocation", "Enrich attacker IPs with city/country/ASN and plot them on a world map."),
+        ("Fail2Ban Builder", "Generate jail.local + filter regex from a sample log line."),
+        ("Cloudflare WAF", "Compose firewall expressions (block by IP/ASN/country/path)."),
+        ("File Integrity", "SHA-256 baselines and change detection for important files."),
+        ("Encrypted Backup", "Generate a tar + gpg backup script with retention policy."),
+        ("auth.log Analyzer", "Detect brute-force SSH patterns and rank offending IPs."),
     ]
-    for icon, name, desc in tools_list:
-        st.markdown(f"<div style='display:flex;align-items:center;gap:8px;padding:4px 0'><span style='font-size:14px'>{icon}</span><span style='font-size:12px;color:#a1a1aa'>{name}</span><span style='font-size:10px;color:#3f3f46;margin-left:auto'>{desc}</span></div>", unsafe_allow_html=True)
+    st.table(pd.DataFrame(rows, columns=["Tool", "Purpose"]))
 
-    st.markdown("<div style='height:1px;background:#27272a;margin:16px 0'></div>", unsafe_allow_html=True)
 
-    # Memory
-    if st.session_state.memories:
-        st.markdown("<div style='font-size:11px;font-weight:600;color:#52525b;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px'>Memory</div>", unsafe_allow_html=True)
-        for m in st.session_state.memories[-3:][::-1]:
-            st.markdown(f"<div style='font-size:11px;color:#71717a;padding:4px 0;border-bottom:1px solid #1e1e22'>💾 {m[:50]}</div>", unsafe_allow_html=True)
+def section_alerts():
+    header("Slack Alerting", "Central notifier used by the other tools. Test it here.")
 
-    st.markdown("<div style='height:1px;background:#27272a;margin:16px 0'></div>", unsafe_allow_html=True)
+    webhook = load_secret("SLACK_WEBHOOK_URL")
+    st.markdown(f"**Configured webhook:** `{mask_secret(webhook)}`")
+    if not webhook:
+        st.info("No webhook set. Add `SLACK_WEBHOOK_URL` to `.streamlit/secrets.toml` (recommended) or `.env`, then reload. Create one at https://api.slack.com/messaging/webhooks")
 
-    # New chat
-    if st.button("⭐  New Chat", use_container_width=True, type="primary"):
-        if st.session_state.messages:
-            st.session_state.chat_history.append({
-                "id": st.session_state.chat_id,
-                "title": st.session_state.messages[0]["content"][:40],
-                "messages": st.session_state.messages.copy(),
-                "agent": agent, "time": datetime.now().isoformat(),
-            })
-        st.session_state.messages = []
-        st.session_state.chat_id = str(uuid.uuid4())[:8]
-        st.session_state.file_ctx = ""
-        st.rerun()
+    with st.form("slack_test"):
+        msg = st.text_area("Message", value=f"🛡️ Cyber Shield test ping at {utcnow()}", height=80)
+        col_a, col_b = st.columns([1, 3])
+        with col_a:
+            override = st.text_input("Override webhook (optional)", type="password", placeholder="https://hooks.slack.com/services/...")
+        submitted = st.form_submit_button("Send test alert", type="primary")
 
-    if st.session_state.chat_history:
-        st.markdown("<div style='font-size:11px;font-weight:600;color:#52525b;text-transform:uppercase;letter-spacing:0.08em;margin:12px 0 8px'>History</div>", unsafe_allow_html=True)
-        for ch in st.session_state.chat_history[-5:][::-1]:
-            if st.button(f"📝 {ch['title'][:25]}", key=f"h_{ch['id']}", use_container_width=True):
-                st.session_state.messages = ch["messages"]
-                st.session_state.chat_id = ch["id"]
-                st.rerun()
-
-# =====================================================================
-# MAIN CHAT AREA
-# =====================================================================
-a = AGENTS[st.session_state.agent]
-st.markdown(f"""
-<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;padding:8px 0">
-    <div style="width:36px;height:36px;border-radius:10px;background:{a['color']}15;border:1px solid {a['color']}30;display:flex;align-items:center;justify-content:center;font-size:18px">{a['icon']}</div>
-    <div>
-        <div style="font-size:15px;font-weight:600;color:#fafafa">{a['name']}</div>
-        <div style="font-size:11px;color:#52525b">{st.session_state.model} · {st.session_state.provider.split(' (')[0]} · Tools Active</div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-# Welcome screen
-if not st.session_state.messages:
-    st.markdown("""
-    <div style="text-align:center;padding:40px 20px 20px">
-        <div style="width:64px;height:64px;border-radius:20px;background:linear-gradient(135deg,#f59e0b,#f97316);display:flex;align-items:center;justify-content:center;font-size:28px;margin:0 auto 20px;box-shadow:0 8px 32px rgba(245,158,11,0.2)">⭐</div>
-        <h1 style="font-size:32px;font-weight:800;letter-spacing:-0.04em;color:#fafafa;margin:0">What can I help with?</h1>
-        <p style="color:#52525b;font-size:14px;margin-top:8px">8 agents · web search · image gen · code runner · Wikipedia · charts</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    prompts = [
-        ("🔍", "Search latest AI news today"),
-        ("🖼️", "Generate a luxury gold logo"),
-        ("💻", "Run: print('Hello World')"),
-        ("📖", "Who is Nikola Tesla?"),
-        ("📊", "Make a bar chart: {Jan:100, Feb:150, Mar:200}"),
-        ("🌐", "Summarize https://news.ycombinator.com"),
-        ("🦈", "Evaluate my startup idea"),
-        ("📚", "Explain quantum computing simply"),
-        ("📎", "Analyze my CSV data"),
-    ]
-    cols = st.columns(3)
-    for i, (icon, text) in enumerate(prompts):
-        with cols[i % 3]:
-            if st.button(f"{icon}  {text}", key=f"p_{i}", use_container_width=True):
-                st.session_state["_prompt_clicked"] = text
-                st.rerun()
-
-# Display messages
-for msg in st.session_state.messages:
-    av = safe_avatar(a["icon"]) if msg["role"] == "assistant" else "👤"
-    with st.chat_message(msg["role"], avatar=av):
-        st.markdown(msg["content"])
-        if msg.get("image_url"):
-            st.image(msg["image_url"], use_container_width=True)
-
-# File uploader
-uploaded = st.file_uploader("📎 Attach files", type=["pdf","txt","md","csv","xlsx","docx","png","jpg","jpeg","py","js","json"],
-    label_visibility="collapsed", accept_multiple_files=True)
-if uploaded:
-    ctx_parts = [f"### {f.name}\n{parse_file(f)}" for f in uploaded]
-    st.session_state.file_ctx = "\n\n".join(ctx_parts)
-    st.success(f"📎 {len(uploaded)} file(s) attached — ask anything about them!")
-
-# Chat input
-prompt = st.session_state.pop("_prompt_clicked", None) or st.chat_input(f"Message {a['name']}…")
-
-if prompt:
-    # Memory extraction
-    low = prompt.lower()
-    if any(k in low for k in ["remember that", "remember my", "my name is"]):
-        st.session_state.memories.append(re.sub(r"(remember that|remember|my name is)\s*", "", low).strip())
-
-    # Add user message
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user", avatar="👤"):
-        st.markdown(prompt)
-
-    # Try auto-tool detection first
-    tool_name, tool_result = detect_and_run_tool(prompt, low)
-
-    # Build system prompt
-    system = a["prompt"] + f"\n\n{TOOLS_DESC}"
-    if st.session_state.memories:
-        system += "\n\n[User memories]:\n" + "\n".join(f"- {m}" for m in st.session_state.memories[-10:])
-    if st.session_state.file_ctx:
-        system += f"\n\n[Attached files]:\n{st.session_state.file_ctx[:12000]}"
-
-    msgs = [{"role": "system", "content": system}]
-    for m in st.session_state.messages[-20:]:
-        msgs.append({"role": m["role"], "content": m["content"]})
-
-    # If tool was triggered, add result as context
-    if tool_result:
-        msgs.append({"role": "system", "content": f"[Tool result from {tool_name}]:\n{tool_result[:4000]}"})
-
-    client = get_client()
-    if not client:
-        st.error(f"🔑 No API key for **{st.session_state.provider}**. Add your key in the sidebar.")
-        st.stop()
-
-    with st.chat_message("assistant", avatar=safe_avatar(a["icon"])):
-        # Show tool badge if used
-        if tool_name:
-            st.markdown(f"<span style='background:#27272a;color:#f59e0b;padding:3px 10px;border-radius:100px;font-size:11px;font-family:JetBrains Mono,monospace'>{tool_name} ✓</span>", unsafe_allow_html=True)
-
-        placeholder = st.empty()
-        full = ""
-
-        # If tool returned an image (QR code, chart, generated image)
-        if tool_result and tool_result.startswith("data:image"):
-            st.markdown(f"![Tool output]({tool_result})")
-            full = f"Here's your result:\n\n![Generated]({tool_result})"
-            st.session_state.messages.append({"role": "assistant", "content": full, "image_url": tool_result})
-        elif tool_name == "🖼️ Image Gen" and tool_result and tool_result.startswith("http"):
-            st.image(tool_result, use_container_width=True)
-            full = f"Generated image for: **{prompt}**\n\n![Generated]({tool_result})"
-            st.session_state.messages.append({"role": "assistant", "content": full, "image_url": tool_result})
+    if submitted:
+        with st.spinner("Sending…"):
+            ok, detail = send_slack(msg, webhook=override or None)
+        if ok:
+            st.success(detail)
         else:
-            # Stream text response
-            try:
-                stream = client.chat.completions.create(
-                    model=st.session_state.model, messages=msgs,
-                    stream=True, temperature=0.7, max_tokens=4000,
+            st.error(detail)
+
+
+def section_honeypot():
+    header("Honeypot Canaries", "Decoy files that look tempting but are useless, plus a monitor that alerts Slack when touched.")
+
+    st.markdown("Canaries are deployed on YOUR server. The monitor uses `inotifywait` to watch for access and fires a Slack alert. Generated canaries contain clearly-fake tokens so they're worthless if exfiltrated.")
+
+    presets = {
+        "aws_keys.txt": "# AWS CLI credentials (DECOY)\n[default]\naws_access_key_id = AKIAFAKECANARY000001\naws_secret_access_key = CANARY-please-report-this-access-0001\nregion = us-east-1\n",
+        ".env.prod": "# Production environment (DECOY)\nDATABASE_URL=postgres://canary:NOT-REAL-PASSWORD@db.internal:5432/prod\nSTRIPE_SECRET_KEY=sk_live_CANARY_FAKE_0001\nADMIN_TOKEN=canary-token-do-not-use\n",
+        "id_rsa": "-----BEGIN OPENSSH PRIVATE KEY-----\nDECOY CANARY KEY - REPORT ACCESS TO SECURITY - NOT A REAL KEY\n-----END OPENSSH PRIVATE KEY-----\n",
+        "backup.sql.header": "-- MySQL dump (DECOY) -- canary file, report access\n",
+    }
+
+    chosen = st.multiselect("Canary files to generate", list(presets.keys()), default=list(presets.keys())[:2])
+    deploy_dir = st.text_input("Deploy directory on your server", value="/opt/canary")
+
+    webhook = load_secret("SLACK_WEBHOOK_URL")
+    if not webhook:
+        st.warning("No Slack webhook configured. The monitor script will still be generated, but alerts will fail until SLACK_WEBHOOK_URL is set.")
+
+    # The monitor script - host-side, text only. Never executed by this app.
+    monitor = f"""#!/usr/bin/env bash
+# Canary honeypot monitor - DEPLOY ON YOUR SERVER.
+# Requires: inotify-tools (apt-get install inotify-tools), curl.
+# Alerts Slack whenever a canary file is read/opened.
+set -u
+CANARY_DIR="{deploy_dir}"
+WEBHOOK="${{SLACK_WEBHOOK_URL:-{webhook or 'PUT_YOUR_SLACK_WEBHOOK_HERE'}}}"
+HOST="$(hostname -s 2>/dev/null || echo host)"
+
+[ -d "$CANARY_DIR" ] || {{ echo "Missing $CANARY_DIR" >&2; exit 1; }}
+command -v inotifywait >/dev/null || {{ echo "Install inotify-tools" >&2; exit 1; }}
+
+echo "Watching $CANARY_DIR for access…"
+inotifywait -m -r -e open,access --format '%w%f %e %T' --timefmt '%H:%M:%S' "$CANARY_DIR" |
+while read -r file events ts; do
+  msg="🚨 CANARY TRIPPED on *$HOST* at $ts UTC\\nFile: \\\`$file\\\`\\nEvent: $events\\nLikely unauthorized access."
+  curl -s -X POST -H 'Content-type: application/json' \\
+    --data "$(printf '{{"text":"%s"}}' "$msg")" "$WEBHOOK" >/dev/null
+  logger -t canary "tripped: $file $events"
+done
+"""
+
+    st.markdown("#### Generated canary files")
+    for name in chosen:
+        with st.expander(name):
+            st.code(presets[name], language="text")
+
+    st.markdown("#### Monitor script (`canary-watch.sh`)")
+    st.code(monitor, language="bash")
+
+    # Bundle everything into a zip for easy download
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name in chosen:
+            z.writestr(f"canary/{name}", presets[name])
+        z.writestr("canary/canary-watch.sh", monitor)
+        z.writestr("canary/README.txt", "Canary honeypot pack generated by Sekta Gold Cyber Shield.\nDeploy the canary/ directory to your server and run canary-watch.sh.\nThese files are DECOYS containing fake tokens.\n")
+    buf.seek(0)
+    st.download_button("⬇️ Download canary pack (.zip)", buf, file_name="cyber_shield_canary_pack.zip", mime="application/zip")
+
+    st.caption("Deploy tip: place canaries where an attacker who got in would naturally poke around (home dirs, /var/backups, app roots). Make permissions look real.")
+
+
+def section_geo():
+    header("IP Geolocation & Threat Map", "Enrich attacker IPs via ipapi.co and plot them on a world map.")
+    st.caption("Free tier: ~30k requests/month. Leave the API key blank to use the free tier, or set IPAPI_KEY for higher limits.")
+
+    ips_raw = st.text_area("IPs (one per line, or comma-separated)", height=120, placeholder="203.0.113.5\n198.51.100.10")
+    ips = [x.strip() for x in re.split(r"[\n,]+", ips_raw) if x.strip()]
+    api_key = load_secret("IPAPI_KEY")
+
+    if st.button("Geolocate", type="primary", disabled=not ips):
+        rows = []
+        bar = st.progress(0.0, text="Looking up IPs…")
+        for i, ip in enumerate(ips):
+            data = geolocate_ip(ip, api_key=api_key)
+            if data:
+                rows.append({
+                    "IP": ip,
+                    "Country": data.get("country_name", "?"),
+                    "Region": data.get("region", "?"),
+                    "City": data.get("city", "?"),
+                    "Org/ISP": data.get("org", "?"),
+                    "ASN": data.get("asn", "?"),
+                    "Lat": data.get("latitude"),
+                    "Lon": data.get("longitude"),
+                })
+            else:
+                rows.append({"IP": ip, "Country": "(lookup failed)", "Region": "?", "City": "?", "Org/ISP": "?", "ASN": "?", "Lat": None, "Lon": None})
+            time.sleep(1.0)  # respect free-tier rate guidance
+            bar.progress((i + 1) / len(ips))
+        bar.empty()
+
+        if not rows:
+            st.warning("No results.")
+            return
+
+        st.session_state["geo_rows"] = rows
+
+    rows = st.session_state.get("geo_rows")
+    if rows:
+        df = pd.DataFrame(rows)
+        st.dataframe(df.drop(columns=["Lat", "Lon"]), use_container_width=True, hide_index=True)
+        if _HAS_PLOTLY:
+            geo_df = df.dropna(subset=["Lat", "Lon"])
+            if not geo_df.empty:
+                fig = px.scatter_geo(
+                    geo_df, lat="Lat", lon="Lon", hover_name="IP",
+                    hover_data=["Country", "City", "Org/ISP"],
+                    projection="natural earth", color_discrete_sequence=["#FFC700"],
                 )
-                for chunk in stream:
-                    if chunk.choices[0].delta.content:
-                        full += chunk.choices[0].delta.content
-                        placeholder.markdown(full + "▌")
-                placeholder.markdown(full)
-                st.session_state.messages.append({"role": "assistant", "content": full})
-            except Exception as e:
-                err = str(e)
-                if "429" in err or "quota" in err.lower():
-                    st.error("⚠️ Rate limit hit. Try switching provider or wait a moment.")
-                elif "401" in err or "api_key" in err.lower():
-                    st.error("🔑 Invalid API key. Check your key in the sidebar.")
-                else:
-                    st.error(f"Error: {err[:300]}")
-                st.session_state.messages.append({"role": "assistant", "content": f"⚠️ {err[:200]}"})
+                fig.update_layout(
+                    paper_bgcolor="#0A0A0B", geo=dict(bgcolor="#0A0A0B", showland=True, landcolor="#141415",
+                    countrycolor="#27272a", lakecolor="#0A0A0B"),
+                    margin=dict(l=0, r=0, t=0, b=0), height=460,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No plottable coordinates.")
 
-# Footer
-st.markdown("<div style='height:1px;background:#1e1e22;margin-top:32px'></div>", unsafe_allow_html=True)
-st.markdown("<div style='text-align:center;padding:16px 0;font-size:11px;color:#3f3f46;font-family:JetBrains Mono,monospace'>Sekta AI · 8 Tools · 3 Providers · Free · <a href='https://github.com/goldstarpalms-svg/Sekta-gold-cup' style='color:#52525b'>GitHub</a></div>", unsafe_allow_html=True)
+
+def section_fail2ban():
+    header("Fail2Ban Config Generator", "Build a jail + filter from a sample log line. Deploy on your server.")
+    sample = st.text_input("Sample offending log line", value="Failed password for invalid user admin from 203.0.113.5 port 51022 ssh2")
+    findtime = st.number_input("findtime (seconds)", value=600, step=60)
+    maxretry = st.number_input("maxretry", value=5, min_value=1)
+    bantime = st.number_input("bantime (seconds)", value=3600, step=300)
+
+    # Heuristic regex builder from the sample - extract the IP via common pattern.
+    # This only *generates* a filter; it does not inspect any system.
+    ip_guess = re.search(r"\bfrom (\d{1,3}(?:\.\d{1,3}){3})\b", sample)
+    base = sample
+    if ip_guess:
+        base = sample.replace(ip_guess.group(1), "<HOST>")
+    base = re.escape(base).replace(re.escape("<HOST>"), "<HOST>")
+
+    filt = f"""# /etc/fail2ban/filter.d/cybershield.conf
+[INCLUDES]
+before = common.conf
+
+[Definition]
+failregex = ^.*{base}.*$
+ignoreregex =
+
+# Generated by Sekta Gold Cyber Shield. Review before deploying.
+"""
+
+    jail = f"""# /etc/fail2ban/jail.local
+[cybershield]
+enabled  = true
+filter   = cybershield
+logpath  = /var/log/auth.log
+backend  = systemd
+port     = ssh
+maxretry = {maxretry}
+findtime = {findtime}
+bantime  = {bantime}
+action   = %(action_)s
+"""
+
+    st.markdown("#### Filter (`cybershield.conf`)")
+    st.code(filt, language="ini")
+    download_text("cybershield.conf", filt, "⬇️ Download filter")
+
+    st.markdown("#### Jail (`jail.local` excerpt)")
+    st.code(jail, language="ini")
+    download_text("jail.local", jail, "⬇️ Download jail")
+
+    st.caption("Tip: test with `fail2ban-regex /var/log/auth.log /etc/fail2ban/filter.d/cybershield.conf` before enabling.")
+
+
+def section_waf():
+    header("Cloudflare WAF Rule Builder", "Compose custom firewall expressions. Paste into Cloudflare > Security > WAF > Custom rules.")
+    mode = st.radio("Build mode", ["Block by IP list", "Block by ASN", "Block by country", "Block by path pattern"])
+    expr = ""
+    if mode == "Block by IP list":
+        ips = st.text_area("IPs (CIDR allowed, one per line)", placeholder="203.0.113.5\n198.51.100.0/24")
+        parts = [f'(ip.src eq "{x.strip()}")' for x in ips.splitlines() if x.strip()]
+        expr = " or ".join(parts)
+    elif mode == "Block by ASN":
+        asns = st.text_input("ASNs (comma separated)", placeholder="AS12345, AS67890")
+        parts = [f'(ip.geoip.asnum eq {int(re.sub(r"[^0-9]", "", a))})' for a in asns.split(",") if re.sub(r"[^0-9]", "", a)]
+        expr = " or ".join(parts)
+    elif mode == "Block by country":
+        cc = st.text_input("Country codes (comma separated)", placeholder="CN, RU")
+        parts = [f'(ip.geoip.country eq "{a.strip().upper()}")' for a in cc.split(",") if a.strip()]
+        expr = " or ".join(parts)
+    elif mode == "Block by path pattern":
+        pat = st.text_input("Path pattern (matches.lookup against raw URI)", placeholder="/.env")
+        pat_safe = pat.replace('"', '\\"')
+        expr = f'(http.request.uri.path contains "{pat_safe}")'
+
+    action = st.selectbox("Action", ["Block", "Challenge", "Managed Challenge", "JS Challenge", "Log"])
+    if expr:
+        st.markdown("#### Expression")
+        st.code(expr, language="sql")
+        st.markdown(f"**Action:** `{action}`  — set this in the rule's 'Then take action' dropdown.")
+        st.caption("Review against Cloudflare's expression reference before deploying.")
+
+
+def section_fim():
+    header("File Integrity Monitor", "SHA-256 baselines and change detection.")
+    mode = st.radio("Mode", ["Build baseline", "Compare against baseline"], horizontal=True)
+
+    if mode == "Build baseline":
+        files = st.file_uploader("Upload files to baseline", accept_multiple_files=True)
+        if files:
+            baseline = {}
+            for f in files:
+                data = f.read()
+                baseline[f.name] = {
+                    "sha256": sha256_bytes(data),
+                    "size": len(data),
+                    "baseline_at": utcnow(),
+                }
+            blob = json.dumps(baseline, indent=2)
+            st.code(blob, language="json")
+            download_text("baseline.json", blob, "⬇️ Download baseline.json")
+            st.caption("Store baseline.json securely (e.g., read-only or off-host). Re-run Compare with the same files to detect tampering.")
+    else:
+        baseline_file = st.file_uploader("Upload baseline.json", type=["json"])
+        current_files = st.file_uploader("Upload current files to check", accept_multiple_files=True)
+        if baseline_file and current_files:
+            try:
+                baseline = json.loads(baseline_file.read().decode("utf-8"))
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Could not parse baseline.json: {e}")
+                return
+            findings = []
+            for f in current_files:
+                data = f.read()
+                now_hash = sha256_bytes(data)
+                rec = baseline.get(f.name)
+                if rec is None:
+                    findings.append((f.name, "NEW", "Not in baseline"))
+                elif rec.get("sha256") == now_hash:
+                    findings.append((f.name, "OK", "Matches baseline"))
+                else:
+                    findings.append((f.name, "CHANGED", f"Was {rec.get('sha256','?')[:12]}… now {now_hash[:12]}…"))
+            missing = [n for n in baseline if n not in {f.name for f in current_files}]
+            for n in missing:
+                findings.append((n, "MISSING", "In baseline but not uploaded"))
+            df = pd.DataFrame(findings, columns=["File", "Status", "Detail"])
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def section_backup():
+    header("Encrypted Backup Generator", "Generate a tar + gpg backup script with retention. Review and deploy on your server.")
+    src = st.text_input("Directory to back up", value="/var/www")
+    dest = st.text_input("Backup destination", value="/backups")
+    keep = st.number_input("Retain last N backups", value=7, min_value=1)
+    gpg_recipient = st.text_input("GPG recipient (-r), optional", placeholder="admin@example.com")
+
+    enc = "gpg --batch --yes --symmetric"  # default symmetric passphrase
+    if gpg_recipient.strip():
+        enc = f"gpg --batch --yes --recipient {gpg_recipient.strip()} --encrypt"
+
+    script = f"""#!/usr/bin/env bash
+# Encrypted backup - DEPLOY ON YOUR SERVER. Requires tar + gpg.
+set -euo pipefail
+SRC="{src}"
+DEST="{dest}"
+KEEP={keep}
+TS="$(date +%Y%m%d-%H%M%S)"
+HOST="$(hostname -s)"
+
+mkdir -p "$DEST"
+OUT="$DEST/${{HOST}}-${{TS}}.tar.gz"
+echo "Backing up $SRC -> $OUT"
+tar -czf - -C "$(dirname "$SRC")" "$(basename "$SRC")" | {enc} > "$OUT.gpg"
+chmod 600 "$OUT.gpg"
+echo "Wrote $OUT.gpg"
+
+# Retention: keep newest $KEEP encrypted backups
+ls -1t "$DEST"/${{HOST}}-*.tar.gz.gpg 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r old; do
+  rm -f "$old"; echo "Pruned $old"
+done
+echo "Done."
+"""
+    st.code(script, language="bash")
+    download_text("backup.sh", script, "⬇️ Download backup.sh")
+    st.caption("Schedule with cron, e.g.: `0 3 * * * /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1`. Symmetric mode will prompt for a passphrase unless you supply it via gpg-agent or a passphrase file.")
+
+
+SSH_FAIL_RE = re.compile(r"Failed password for (?:invalid user )?(?P<user>\S+) from (?P<ip>\d{1,3}(?:\.\d{1,3}){3})")
+SSH_OK_RE = re.compile(r"Accepted (?:password|publickey) for (?P<user>\S+) from (?P<ip>\d{1,3}(?:\.\d{1,3}){3})")
+
+
+def section_authlog():
+    header("auth.log Analyzer", "Detect brute-force SSH attempts. Upload or paste your auth.log (client-side parse only).")
+    src = st.radio("Source", ["Paste text", "Upload file"], horizontal=True)
+    text = ""
+    if src == "Paste text":
+        text = st.text_area("auth.log contents", height=180, placeholder="Jan 1 12:00:00 host sshd[123]: Failed password for invalid user root from 203.0.113.5 port 51022 ssh2")
+    else:
+        up = st.file_uploader("Upload auth.log", type=["log", "txt", ""])
+        if up:
+            text = up.read().decode("utf-8", errors="ignore")
+
+    if not text.strip():
+        st.info("Provide auth.log data to analyze.")
+        return
+
+    failed_by_ip = Counter()
+    failed_by_user = Counter()
+    ok_by_ip = Counter()
+    for line in text.splitlines():
+        m = SSH_FAIL_RE.search(line)
+        if m:
+            failed_by_ip[m.group("ip")] += 1
+            failed_by_user[m.group("user")] += 1
+            continue
+        m2 = SSH_OK_RE.search(line)
+        if m2:
+            ok_by_ip[m2.group("ip")] += 1
+
+    total_fail = sum(failed_by_ip.values())
+    bf_threshold = st.slider("Brute-force threshold (failures/IP)", min_value=3, max_value=100, value=10)
+    brute = {ip: n for ip, n in failed_by_ip.items() if n >= bf_threshold}
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Failed attempts", total_fail)
+    c2.metric("Unique offending IPs", len(failed_by_ip))
+    c3.metric("Likely brute-force IPs", len(brute))
+
+    if failed_by_ip:
+        st.markdown("### Top offending IPs")
+        top = pd.DataFrame(failed_by_ip.most_common(20), columns=["IP", "Failed attempts"])
+        st.dataframe(top, use_container_width=True, hide_index=True)
+
+    if failed_by_user:
+        st.markdown("### Targeted usernames")
+        st.dataframe(pd.DataFrame(failed_by_user.most_common(15), columns=["Username", "Attempts"]), use_container_width=True, hide_index=True)
+
+    if brute:
+        st.markdown("### 🚩 Brute-force IPs (consider banning)")
+        bf_df = pd.DataFrame(sorted(brute.items(), key=lambda x: -x[1]), columns=["IP", "Failed attempts"])
+        st.dataframe(bf_df, use_container_width=True, hide_index=True)
+        ips = "\n".join(bf_df["IP"].tolist())
+        st.text_area("Copy these to IP Geolocation or Fail2Ban", ips, height=120)
+
+        if st.button("🔔 Send top brute-force summary to Slack", type="primary"):
+            webhook = load_secret("SLACK_WEBHOOK_URL")
+            if not webhook:
+                st.error("Set SLACK_WEBHOOK_URL to enable Slack alerts.")
+            else:
+                msg = f"🛡️ Cyber Shield: {len(brute)} brute-force IP(s) detected.\n" + "\n".join(
+                    f"• {ip} ({n} fails)" for ip, n in sorted(brute.items(), key=lambda x: -x[1])[:15]
+                )
+                ok, detail = send_slack(msg)
+                (st.success if ok else st.error)(detail)
+    else:
+        st.success("No IPs crossed the brute-force threshold.")
+
+
+# --------------------------------------------------------------------------
+# NAV
+# --------------------------------------------------------------------------
+NAV = {
+    "📊 Overview": section_overview,
+    "🔔 Slack Alerts": section_alerts,
+    "🍯 Honeypot Canaries": section_honeypot,
+    "🌍 IP Geolocation": section_geo,
+    "🚫 Fail2Ban Builder": section_fail2ban,
+    "☁️ Cloudflare WAF": section_waf,
+    "🔍 File Integrity": section_fim,
+    "💾 Encrypted Backup": section_backup,
+    "📜 auth.log Analyzer": section_authlog,
+}
+
+
+def main():
+    with st.sidebar:
+        st.markdown("### 🛡️ Cyber Shield")
+        st.caption("Defensive operations console")
+        choice = st.radio("Tool", list(NAV.keys()), label_visibility="collapsed")
+        st.divider()
+        st.caption("Defensive-only · no offensive capability")
+        st.caption(f"UTC {utcnow()}")
+    NAV[choice]()
+
+
+if __name__ == "__main__":
+    main()

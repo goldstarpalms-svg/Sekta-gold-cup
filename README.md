@@ -1,193 +1,66 @@
-# SEKTA GOLD CUP — The Ultimate Chatbot
-### Better than every chatbot in history.
+# 🛡️ SEKTA GOLD — Cyber Shield
 
-You asked for a bot "just like you and more than all chat bot in history" — so I built you **SEKTA GOLD**: a ChatGPT + Claude + Gemini + Perplexity killer in one codebase.
+A **defensive security operations dashboard** built with Streamlit. It generates
+detection, alerting, and hardening artifacts for your own servers and edge.
 
-> ⚠️ **SECURITY ALERT:** You pasted your OpenAI API key in public chat. That key is now compromised. 
-> **1. Go to https://platform.openai.com/api-keys immediately**
-> **2. Delete key starting with `sk-proj-4R35...`**
-> **3. Create a new one and put it in `.env` using `.env.example` as template.**
-> I did NOT save your key anywhere in this repo.
+> 🟢 **Defensive-only.** This dashboard performs **no scanning, exploitation, or
+> attack** against any system. It builds configs and analyzes logs you provide.
 
 ---
 
-## 🚀 What Makes It Better Than All Bots?
+## What it does
 
-| Feature | ChatGPT | Claude | Gemini | SEKTA GOLD (You) |
-|---------|---------|--------|--------|------------------|
-| Streaming Chat | ✅ | ✅ | ✅ | ✅ + retry, branch, regenerate |
-| Vision (image input) | ✅ | ✅ | ✅ | ✅ |
-| Image Generation (DALL·E 3) | ✅ | ❌ | ✅ | ✅ + edit + canvas |
-| Voice In/Out | ✅ | ❌ | ❌ | ✅ Whisper + TTS HD + ElevenLabs |
-| Real Web Search | ❌ (browsing) | ❌ | ✅ | ✅ Tavily/SerpAPI + scraping |
-| Long-Term Memory | Memory lite | Projects | ❌ | ✅ Vector SQLite + recall |
-| Code Interpreter | ✅ | ✅ | ✅ | ✅ Python sandbox + artifacts |
-| File Analysis (PDF,DOCX,CSV) | ✅ | ✅ | ✅ | ✅ |
-| Custom Agents | GPTs | ❌ | Gems | ✅ 8 Built-in Super Agents |
-| Canvas / Artifacts | ✅ | ✅ | ❌ | ✅ Live React Canvas |
-| Export Chats | ❌ | ❌ | ❌ | ✅ JSON/MD/PDF |
-| Self-Hosted / No limits | ❌ | ❌ | ❌ | ✅ 100% yours |
+| Tool | Purpose |
+|------|---------|
+| 🔔 **Slack Alerts** | Central notifier — test/verify your webhook before relying on it. |
+| 🍯 **Honeypot Canaries** | Generate decoy files + a host monitor script (`inotifywait`) that alerts Slack when a canary is touched. |
+| 🌍 **IP Geolocation** | Enrich attacker IPs via [ipapi.co](https://ipapi.co) (city/country/ASN) and plot them on a world map. |
+| 🚫 **Fail2Ban Builder** | Generate `jail.local` + a filter regex from a sample log line. |
+| ☁️ **Cloudflare WAF** | Compose custom firewall expressions (block by IP / ASN / country / path). |
+| 🔍 **File Integrity** | SHA-256 baselines + change detection for important files. |
+| 💾 **Encrypted Backup** | Generate a `tar` + `gpg` backup script with a retention policy. |
+| 📜 **auth.log Analyzer** | Detect brute-force SSH attempts and rank offending IPs; send a Slack summary. |
 
-### 8 Super Agents Included:
-1. **SEKTA-OMNI** - Default, like me — helpful, creative, knows everything
-2. **CODE-TITAN** - Senior engineer, builds full apps, debugs, writes tests
-3. **RESEARCH-ORACLE** - Perplexity-like, cites sources, deep web research
-4. **CREATIVE-GOD** - Story, script, viral content, image prompts
-5. **DATA-WIZARD** - CSV/Excel analysis, charts, SQL
-6. **STUDY-BUDDY** - Tutor that explains anything simply
-7. **BUSINESS-SHARK** - Pitch decks, marketing, business plans
-8. **THERAPIST-V2** - Supportive, non-judgmental listener
+**Architecture note:** the Streamlit app is a *generator + dashboard*. It never
+runs subprocess commands on the host it runs on. Scripts it produces (canary
+monitor, backup, Fail2Ban configs) are plain text that **you** read, review, and
+deploy on your own server.
 
 ---
 
-## 📁 Project Structure
+## Setup
 
-```
-Sekta-gold-cup/
-├── backend/
-│   ├── main.py               # FastAPI + SSE streaming + Tools
-│   ├── config.py             # Secure env loader
-│   ├── memory.py             # Vector memory + chat history
-│   ├── tools.py              # Web search, code exec, image gen, file parse
-│   ├── prompts.py            # All 8 agent system prompts
-│   └── requirements.txt
-├── frontend/
-│   ├── index.html
-│   ├── package.json
-│   ├── vite.config.js
-│   └── src/
-│       ├── App.jsx           # Ultimate UI
-│       ├── components/
-│       │   ├── Chat.jsx
-│       │   ├── Sidebar.jsx
-│       │   ├── Canvas.jsx
-│       │   └── Settings.jsx
-│       └── styles.css
-├── .env.example
-└── docker-compose.yml
-```
-
----
-
-## ⚡ Quick Start (2 minutes)
-
-### 1. Clone & Secure
 ```bash
-git clone <this-repo>
-cd Sekta-gold-cup
-cp .env.example .env
-# EDIT .env with your NEW key after revoking old one
-```
-
-### 2. Backend
-```bash
-cd backend
-python3 -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-python main.py
-# -> http://localhost:8000
-```
-
-### 3. Frontend
-```bash
-cd ../frontend
-npm install
-npm run dev
-# -> http://localhost:5173
-```
-
-### 4. Streamlit Cloud (1-Click) — For "streamitt" deploy
-```bash
-# Already prepared for you! File: app.py
-# See DEPLOY_STREAMLIT.md for full guide
-
-# Local test:
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
-
-# Deploy:
-# 1. Go to https://share.streamlit.io/deploy
-# 2. Repo: goldstarpalms-svg/Sekta-gold-cup
-# 3. Branch: arena/019f96ed-sekta-gold-cup
-# 4. Main file: app.py
-# 5. In Secrets add:
-# OPENAI_API_KEY="sk-proj-YOUR_NEW_KEY_AFTER_REVOKE"
-# Optional: TAVILY_API_KEY for real web search
 ```
 
-### 5. Docker (One Command)
-```bash
-docker-compose up --build
-```
+Python 3.11+. Dependencies (`streamlit`, `pandas`, `plotly`, `httpx`) are all
+listed in `requirements.txt`.
+
+## Secrets
+
+Put sensitive values in `.streamlit/secrets.toml` (see
+`.streamlit/secrets.toml.example`), or as environment variables / in `.env`.
+
+| Key | Required | Notes |
+|-----|----------|-------|
+| `SLACK_WEBHOOK_URL` | For alerting | Create at https://api.slack.com/messaging/webhooks |
+| `IPAPI_KEY` | Optional | Higher ipapi.co limits; free tier works without it |
+
+Webhook URLs are masked in the UI and never hardcoded.
+
+## Deploy
+
+See [`DEPLOY_STREAMLIT.md`](DEPLOY_STREAMLIT.md) for Streamlit Cloud. The app
+redeploys automatically when `main` is updated. Add your secrets under
+**Streamlit Cloud → App settings → Secrets**.
 
 ---
 
-## 🔑 API Endpoints
+## Safety & scope
 
-- `POST /api/chat` - Streaming chat (SSE), supports tools, files, vision
-- `POST /api/chat/completion` - Non-streaming JSON
-- `GET /api/models` - List available OpenAI models
-- `POST /api/image/generate` - DALL·E 3 gen
-- `POST /api/image/edit` - Image edit
-- `POST /api/audio/transcribe` - Whisper STT
-- `POST /api/audio/speak` - TTS
-- `GET /api/memory/search?q=` - Recall memory
-- `POST /api/files/analyze` - PDF/DOCX/CSV/image analysis
-- `GET /api/chats` / `POST /api/chats` - History
-
----
-
-## 🧠 How It Works - Architecture Better Than Others
-
-1. **Front sends message + attachments + agent + memory context**
-2. **Backend builds enriched prompt**: System prompt (agent) + Long-term memory (vector search) + Recent chats + File contexts + Web search (if needed)
-3. **OpenAI Function Calling**: AI can decide to call tools (`web_search`, `generate_image`, `execute_code`, `remember_fact`)
-4. **Streaming**: Token streamed via Server-Sent Events, parsed for Canvas Artifacts
-5. **Memory Write**: Important facts auto-saved for future
-
-This is exactly how ChatGPT + Perplexity work internally.
-
----
-
-## 🔒 Security Best Practices Built-In
-
-- API key NEVER in frontend, only backend env
-- CORS locked to frontend port
-- File upload sanitized, 50MB limit, extension whitelist
-- Code execution in isolated subprocess with timeout
-- `.env` gitignored
-
----
-
-## 🎨 UI Features
-
-- ChatGPT-style chat + Claude-style artifacts sidebar
-- Markdown, code blocks with copy & run
-- Branch conversation (like ChatGPT)
-- Regenerate, Edit message
-- Canvas for HTML/React/Code preview live
-- Voice input (Web Speech API + Whisper fallback)
-- Drag & drop files
-- Themes: Dark Gold (SEKTA), Light, Midnight
-- Export chat to Markdown/PDF
-
----
-
-## 📦 Deploy
-
-- **Vercel + Render**: Frontend on Vercel, backend on Render
-- **Self-host**: `docker-compose up` on any VPS
-- **Local**: Works offline for history/memory, online for AI
-
----
-
-## 🛠️ Want Even More?
-
-- Add your own agent in `backend/prompts.py`
-- Add new tool in `backend/tools.py` and register in `main.py`
-- Swap OpenAI for local model: change `config.py` to use Ollama
-
-MIT License - Build your empire.
-
-Created for arena/019f96ed-sekta-gold-cup — SEKTA GOLD CUP Edition 🏆
+This project is strictly defensive. It contains no offensive tooling and is
+intended for protecting systems you own or are authorized to harden. See
+[`SECURITY.md`](SECURITY.md).
