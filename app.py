@@ -1,12 +1,6 @@
 """
 SEKTA GOLD CUP — Streamlit Cloud Edition
-The Ultimate Chatbot — Better than all history, now 1-file Streamlit deploy
-
-Deploy to Streamlit Cloud in 1 click: https://share.streamlit.io/deploy
-
-Secrets needed (in Streamlit Dashboard → Secrets):
-OPENAI_API_KEY = "sk-proj-..."
-TAVILY_API_KEY = "tvly-..." # optional for real web search
+Production-ready AI chatbot with multiple free providers.
 """
 
 import streamlit as st
@@ -16,126 +10,147 @@ import base64
 import time
 import uuid
 from datetime import datetime
-from typing import List, Dict
-import io
 
-# --- PAGE CONFIG GOLD THEME ---
+# --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="SEKTA GOLD CUP — Ultimate AI",
-    page_icon="🏆",
+    page_title="Sekta AI",
+    page_icon="✦",
     layout="wide",
     initial_sidebar_state="expanded",
-    menu_items={
-        'About': "# SEKTA GOLD CUP\nBetter than ChatGPT, Claude, Gemini combined.\nBuilt for Streamlit Cloud."
-    }
 )
 
-# --- GOLD CSS ---
+# --- CSS ---
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
-html, body, [class*="css"] { font-family: 'Instrument Sans', sans-serif; }
-.stApp { background: #0A0A0B; color: #E5E5E5; }
-h1, h2, h3 { font-family: 'Instrument Sans', sans-serif !important; }
-[data-testid="stSidebar"] { background: #0F0F10; border-right: 1px solid #232325; }
-[data-testid="stHeader"] { background: rgba(10,10,11,0.8); backdrop-filter: blur(10px); }
-.stChatMessage { background: #141415; border: 1px solid #232325; border-radius: 16px; }
-.stChatMessage[data-testid="stChatMessage"]:nth-child(odd) { background: #141415; }
-div[data-testid="stChatMessageAvatarAssistant"] { background: linear-gradient(135deg,#FFC700,#FF8A00); }
-.gold-card { background: #141415; border: 1px solid #232325; border-radius: 12px; padding: 16px; }
-.gold-badge { background: rgba(255,199,0,0.1); border: 1px solid rgba(255,199,0,0.3); color: #FFC700; padding: 4px 10px; border-radius: 100px; font-size: 11px; font-family: 'JetBrains Mono'; }
-.gold-btn > button { background: white !important; color: black !important; border-radius: 10px !important; font-weight: 600 !important; }
-.gold-glow { box-shadow: 0 0 40px rgba(255,199,0,0.15); }
-a { color: #FFC700 !important; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif; }
+.stApp { background: #09090b; color: #e4e4e7; }
+
+/* Sidebar */
+[data-testid="stSidebar"] { background: #09090b; border-right: 1px solid #27272a; }
+[data-testid="stSidebar"] [data-testid="stMarkdown"] { color: #a1a1aa; }
+
+/* Header bar */
+[data-testid="stHeader"] { background: rgba(9,9,11,0.85); backdrop-filter: blur(12px); }
+
+/* Chat messages */
+.stChatMessage { border-radius: 16px !important; }
+div[data-testid="stChatMessage"]:nth-child(odd) { background: #18181b; border: 1px solid #27272a; }
+div[data-testid="stChatMessage"]:nth-child(even) { background: #0f0f12; border: 1px solid #1e1e22; }
+div[data-testid="stChatMessageAvatarUser"] { background: linear-gradient(135deg, #6366f1, #8b5cf6) !important; }
+div[data-testid="stChatMessageAvatarAssistant"] { background: linear-gradient(135deg, #f59e0b, #f97316) !important; }
+
+/* Input */
+[data-testid="stChatInput"] { background: #18181b; border: 1px solid #27272a; border-radius: 16px; }
+[data-testid="stChatInput"] textarea { color: #e4e4e7; }
+[data-testid="stChatInput"] textarea::placeholder { color: #52525b; }
+
+/* Buttons */
+.stButton > button { border-radius: 10px; font-weight: 500; transition: all 0.2s; }
+.stButton > button:hover { transform: translateY(-1px); }
+
+/* Cards */
+.card { background: #18181b; border: 1px solid #27272a; border-radius: 12px; padding: 16px; }
+.card-highlight { background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.2); border-radius: 12px; padding: 16px; }
+.badge { display: inline-block; background: #27272a; color: #a1a1aa; padding: 3px 10px; border-radius: 100px; font-size: 11px; font-weight: 500; font-family: 'JetBrains Mono'; }
+.badge-gold { background: rgba(245,158,11,0.1); color: #f59e0b; border: 1px solid rgba(245,158,11,0.2); }
+.badge-green { background: rgba(34,197,94,0.1); color: #22c55e; border: 1px solid rgba(34,197,94,0.2); }
+.badge-purple { background: rgba(139,92,246,0.1); color: #a78bfa; border: 1px solid rgba(139,92,246,0.2); }
+
+/* Quick prompts */
+.prompt-card { background: #18181b; border: 1px solid #27272a; border-radius: 12px; padding: 14px 16px; cursor: pointer; transition: all 0.2s; }
+.prompt-card:hover { border-color: #3f3f46; background: #1e1e22; }
+
+/* Misc */
+a { color: #f59e0b !important; }
+div[data-testid="stSelectbox"] { background: #18181b; border-radius: 10px; }
+div[data-testid="stExpander"] { background: #18181b; border: 1px solid #27272a; border-radius: 12px; }
+
+/* Hide Streamlit branding */
+#MainMenu { visibility: hidden; }
+footer { visibility: hidden; }
+[data-testid="stStatusWidget"] { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- AGENTS (same as backend) ---
-AGENTS = {
-    "sekta-omni": {
-        "name": "SEKTA GOLD OMNI",
-        "icon": "🏆",
-        "desc": "Ultimate - ChatGPT+Claude+Perplexity combined",
-        "prompt": """You are SEKTA GOLD OMNI — the most advanced AI ever, better than all chatbots in history. Built for Streamlit Cloud.
-
-You have superpowers: web search (if TAVILY key), image gen (DALL-E 3), file analysis, memory. 
-Style: helpful, witty, direct, concise but thorough. Use markdown elegantly. Always offer next steps.
-If user asks for recent news, prices, scores, you MUST say you searched (and use search tool logic if available).
-If user asks for image/logo/art, you MUST generate via image tool mindset and give detailed prompt.
-
-Current time: 2026-07-25. You are running on Streamlit Cloud.
-You are SEKTA GOLD — Gold Standard."""
-    },
-    "code-titan": {
-        "name": "CODE TITAN",
-        "icon": "💻",
-        "desc": "Staff Engineer, builds full apps",
-        "prompt": """You are CODE TITAN — Staff Engineer at FAANG, better than Cursor/Devin. Write PRODUCTION-READY code, error handling, best practices. If asked for app, build fully with file structure and how to run. Use Streamlit artifacts where possible: provide code that can run in Streamlit. Be builder, not tutorial."""
-    },
-    "research-oracle": {
-        "name": "RESEARCH ORACLE",
-        "icon": "🔍",
-        "desc": "Perplexity Pro with citations",
-        "prompt": """You are RESEARCH ORACLE — PhD researcher. For factual/news questions, MUST search web and provide 3-5 citations like [1](url). Structure: TL;DR → Key Findings with sources → Deep Dive. Be precise, flag uncertainty."""
-    },
-    "creative-god": {
-        "name": "CREATIVE GOD",
-        "icon": "🎨",
-        "desc": "Viral content & visuals",
-        "prompt": """You are CREATIVE GOD — Cannes Lions winner. Give 3 variations: Safe, Bold, Unhinged. For visuals, provide ultra-detailed DALL-E prompt: Subject, style, lighting, lens, palette, mood --ar 16:9. Make it famous."""
-    },
-    "data-wizard": {
-        "name": "DATA WIZARD",
-        "icon": "📊",
-        "desc": "CSV & chart master",
-        "prompt": """You are DATA WIZARD — Kaggle Grandmaster. When user uploads CSV/XLSX, do EDA: shape, columns, missing, stats, insights, actionable recommendations. Write pandas code to analyze. Turn data to gold."""
-    },
-    "study-buddy": {
-        "name": "STUDY BUDDY",
-        "icon": "📚",
-        "desc": "Feynman tutor",
-        "prompt": """You are STUDY BUDDY — best tutor. Teach via Analogy → Simple → Example → Quiz. Adapt to user level. Use diagrams via markdown or image gen. Make learning addictive."""
-    },
-    "business-shark": {
-        "name": "BUSINESS SHARK",
-        "icon": "🦈",
-        "desc": "YC + Shark Tank",
-        "prompt": """You are BUSINESS SHARK — built 3 unicorns. Evaluate via Pain/Market/Moat/Money. For pitch: Problem, Solution, Market, Product, Traction, Team, Financials, Ask. Brutally honest, make founders rich."""
-    },
-    "therapist-v2": {
-        "name": "THERAPIST V2",
-        "icon": "💛",
-        "desc": "Supportive listener",
-        "prompt": """You are THERAPIST V2 — warm, empathetic, non-judgmental, not licensed. Validate, reflect feelings, ask open Qs, CBT tools. If self-harm, give crisis lines: US 988, UK 116 123. I'm AI disclaimer."""
-    },
-}
-
-# --- PROVIDERS (free options!) ---
+# --- PROVIDERS ---
 PROVIDERS = {
-    "Groq (FREE)": {
+    "Groq (Free)": {
+        "icon": "⚡",
         "base_url": "https://api.groq.com/openai/v1",
-        "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"],
+        "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
         "default_model": "llama-3.3-70b-versatile",
-        "signup": "https://console.groq.com — free, no card, instant",
+        "signup": "console.groq.com",
         "env_key": "GROQ_API_KEY",
+        "features": ["Chat", "Fast"],
     },
-    "Google Gemini (FREE)": {
+    "Gemini (Free)": {
+        "icon": "💎",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
         "models": ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"],
         "default_model": "gemini-2.0-flash",
-        "signup": "https://aistudio.google.com/apikey — free, no card",
+        "signup": "aistudio.google.com/apikey",
         "env_key": "GEMINI_API_KEY",
+        "features": ["Chat", "Vision"],
     },
-    "OpenAI (paid)": {
+    "OpenAI (Paid)": {
+        "icon": "🧠",
         "base_url": None,
         "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
         "default_model": "gpt-4o",
-        "signup": "https://platform.openai.com/api-keys",
+        "signup": "platform.openai.com",
         "env_key": "OPENAI_API_KEY",
+        "features": ["Chat", "Tools", "Vision", "Image Gen"],
     },
 }
 
-def get_provider_key(env_key):
+# --- AGENTS ---
+AGENTS = {
+    "sekta-omni": {
+        "name": "Sekta Omni", "icon": "✦", "color": "#f59e0b",
+        "desc": "All-purpose assistant",
+        "prompt": "You are Sekta AI — a helpful, concise, and capable AI assistant. Use markdown formatting. Be direct and thorough. Current date: 2026-07-25.",
+    },
+    "code-titan": {
+        "name": "Code Titan", "icon": "💻", "color": "#6366f1",
+        "desc": "Senior engineer — builds apps",
+        "prompt": "You are Code Titan — a Staff Engineer. Write production-ready code with error handling. Build full features, not tutorials. Include file structure and setup instructions.",
+    },
+    "research-oracle": {
+        "name": "Research Oracle", "icon": "🔍", "color": "#10b981",
+        "desc": "Deep research with sources",
+        "prompt": "You are Research Oracle — a precise researcher. Structure: TL;DR → Key Findings → Deep Dive. Cite sources with [1](url). Distinguish fact from opinion.",
+    },
+    "creative-god": {
+        "name": "Creative God", "icon": "🎨", "color": "#ec4899",
+        "desc": "Content & creative director",
+        "prompt": "You are Creative God — an award-winning creative director. Give 3 variations: Safe, Bold, Unhinged. Make everything memorable and shareable.",
+    },
+    "data-wizard": {
+        "name": "Data Wizard", "icon": "📊", "color": "#8b5cf6",
+        "desc": "Data analysis & charts",
+        "prompt": "You are Data Wizard — a data scientist. When given data, do EDA: shape, columns, missing values, stats, insights. Write pandas code. Give actionable recommendations.",
+    },
+    "study-buddy": {
+        "name": "Study Buddy", "icon": "📚", "color": "#06b6d4",
+        "desc": "Feynman-style tutor",
+        "prompt": "You are Study Buddy — the best tutor. Teach via Analogy → Simple Explanation → Example → Quiz. Adapt to user level. Make learning addictive.",
+    },
+    "business-shark": {
+        "name": "Business Shark", "icon": "🦈", "color": "#f97316",
+        "desc": "Startup & growth strategist",
+        "prompt": "You are Business Shark — built 3 unicorns. Evaluate ideas via Pain/Market/Moat/Money. Be brutally honest. Give actionable advice with metrics.",
+    },
+    "therapist-v2": {
+        "name": "Therapist V2", "icon": "💛", "color": "#eab308",
+        "desc": "Supportive listener",
+        "prompt": "You are Therapist V2 — warm, empathetic, non-judgmental. Validate feelings, ask open questions, use CBT tools. If self-harm mentioned, provide crisis resources (US 988). You are an AI, not a professional.",
+    },
+}
+
+# --- HELPERS ---
+def get_key(env_key):
     key = None
     try:
         key = st.secrets[env_key]
@@ -144,18 +159,17 @@ def get_provider_key(env_key):
     if not key:
         key = os.getenv(env_key, "")
     if not key:
-        key = st.session_state.get("api_key_input", "")
+        key = st.session_state.get("manual_key", "")
     return key
 
 def get_client():
-    provider_name = st.session_state.get("provider", "Groq (FREE)")
-    provider = PROVIDERS[provider_name]
-    key = get_provider_key(provider["env_key"])
-    if not key or "YOUR_" in key:
-        return None, key
+    prov = PROVIDERS[st.session_state.get("provider", "Groq (Free)")]
+    key = get_key(prov["env_key"])
+    if not key:
+        return None, None
     from openai import OpenAI
-    if provider["base_url"]:
-        return OpenAI(api_key=key, base_url=provider["base_url"]), key
+    if prov["base_url"]:
+        return OpenAI(api_key=key, base_url=prov["base_url"]), key
     return OpenAI(api_key=key), key
 
 def get_tavily_key():
@@ -164,430 +178,276 @@ def get_tavily_key():
     except Exception:
         return os.getenv("TAVILY_API_KEY", "")
 
-# --- TOOLS ---
-def tool_web_search(query: str, num=5):
-    tavily_key = get_tavily_key()
-    results = ""
-    if tavily_key:
+def web_search(query, num=5):
+    key = get_tavily_key()
+    if key:
         try:
             from tavily import TavilyClient
-            client = TavilyClient(api_key=tavily_key)
-            res = client.search(query, search_depth="advanced", max_results=num)
-            for i, r in enumerate(res.get('results', [])[:num]):
-                results += f"[{i+1}] {r.get('title')} — {r.get('url')}\n{r.get('content')[:600]}\n\n"
-            return f"Web search results for '{query}':\n\n{results}"
+            res = TavilyClient(api_key=key).search(query, search_depth="advanced", max_results=num)
+            out = ""
+            for i, r in enumerate(res.get("results", [])[:num]):
+                out += f"[{i+1}] {r.get('title')} — {r.get('url')}\n{r.get('content','')[:500]}\n\n"
+            return out or "No results found."
         except Exception as e:
-            results += f"Tavily error {e}\n"
-    # Fallback DuckDuckGo abstract
+            return f"Search error: {e}"
     try:
         import httpx
         with httpx.Client(timeout=10) as c:
-            resp = c.get(f"https://api.duckduckgo.com/?q={query}&format=json")
-            data = resp.json()
-            if data.get('AbstractText'):
-                results += f"DuckDuckGo: {data['AbstractText']} — {data.get('AbstractURL')}\n"
+            data = c.get(f"https://api.duckduckgo.com/?q={query}&format=json").json()
+            if data.get("AbstractText"):
+                return f"{data['AbstractText']} — {data.get('AbstractURL','')}"
     except Exception:
         pass
-    if not results:
-        results = f"No live search available (add TAVILY_API_KEY in Streamlit Secrets for real search). Answering '{query}' from knowledge but note data may not be real-time."
-    return results
+    return "No search available. Add TAVILY_API_KEY for web search."
 
-def tool_generate_image(prompt: str, size="1024x1024"):
-    # Image gen only works with OpenAI - try OpenAI key directly
-    openai_key = get_provider_key("OPENAI_API_KEY")
-    if not openai_key or "YOUR_" in openai_key:
-        return None, "Image generation requires an OpenAI API key (DALL-E). Add OPENAI_API_KEY in Secrets."
+def gen_image(prompt, size="1024x1024"):
+    key = get_key("OPENAI_API_KEY")
+    if not key:
+        return None, "Requires OpenAI API key for DALL-E image generation."
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=openai_key)
-        res = client.images.generate(model="dall-e-3", prompt=prompt, size=size, quality="hd", n=1)
-        url = res.data[0].url
-        return url, getattr(res.data[0], 'revised_prompt', prompt)
+        res = OpenAI(api_key=key).images.generate(model="dall-e-3", prompt=prompt, size=size, quality="hd", n=1)
+        return res.data[0].url, getattr(res.data[0], "revised_prompt", prompt)
     except Exception as e:
         return None, str(e)
 
-def parse_uploaded_file(uploaded_file):
-    name = uploaded_file.name
-    ext = name.split(".")[-1].lower()
+def parse_file(f):
+    name = f.name
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     try:
         if ext == "pdf":
             from PyPDF2 import PdfReader
-            reader = PdfReader(uploaded_file)
-            text = "".join([p.extract_text() or "" for p in reader.pages[:20]])
-            return f"--- FILE {name} ---\n{text[:15000]}"
-        elif ext in ["txt","md","py","js","json","csv","html","css"]:
-            content = uploaded_file.read().decode('utf-8', errors='ignore')
-            return f"--- FILE {name} ---\n{content[:15000]}"
-        elif ext in ["xlsx","xls"]:
+            return "".join((p.extract_text() or "") for p in PdfReader(f).pages[:20])[:15000]
+        elif ext in ("xlsx", "xls"):
             import pandas as pd
-            df = pd.read_excel(uploaded_file)
-            return f"--- FILE {name} Excel shape {df.shape} columns {list(df.columns)} ---\n{df.head(20).to_string()}"
-        elif ext in ["docx"]:
+            df = pd.read_excel(f)
+            return f"Shape: {df.shape}\nColumns: {list(df.columns)}\n\n{df.head(20).to_string()}"
+        elif ext == "docx":
             from docx import Document
-            doc = Document(uploaded_file)
-            return f"--- FILE {name} ---\n" + "\n".join([p.text for p in doc.paragraphs])[:15000]
-        elif ext in ["png","jpg","jpeg","webp"]:
-            # Return for vision
-            b64 = base64.b64encode(uploaded_file.getvalue()).decode()
-            return f"[IMAGE FILE: {name} - base64 vision available]"
+            return "\n".join(p.text for p in Document(f).paragraphs)[:15000]
+        elif ext in ("png", "jpg", "jpeg", "webp"):
+            return "[IMAGE — describe what you see]"
         else:
-            return f"[Unsupported file {name}]"
+            return f.read().decode("utf-8", errors="ignore")[:15000]
     except Exception as e:
-        return f"[Error parsing {name}: {e}]"
+        return f"Error reading {name}: {e}"
 
 # --- SESSION STATE ---
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = [] # list of chats
-if "current_chat_id" not in st.session_state:
-    st.session_state.current_chat_id = str(uuid.uuid4())[:8]
-if "uploaded_context" not in st.session_state:
-    st.session_state.uploaded_context = ""
-if "memories" not in st.session_state:
-    st.session_state.memories = []  # simple in-memory for streamlit cloud (persists per session)
-if "model" not in st.session_state:
-    st.session_state.model = "gpt-4o"
+for k, v in {
+    "messages": [], "chat_history": [], "chat_id": str(uuid.uuid4())[:8],
+    "file_ctx": "", "memories": [], "model": "llama-3.3-70b-versatile",
+    "provider": "Groq (Free)", "agent": "sekta-omni", "manual_key": "",
+}.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 # --- SIDEBAR ---
 with st.sidebar:
+    # Logo
     st.markdown("""
-    <div style='display:flex;gap:10px;align-items:center;margin-bottom:16px'>
-      <div style='width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#FFC700,#FF8A00);display:flex;align-items:center;justify-content:center;color:black;font-weight:800;font-size:18px'>S</div>
-      <div><div style='font-weight:800;line-height:1'>SEKTA GOLD</div><div style='font-size:11px;color:#8A8A90;font-family:monospace'>STREAMLIT • v2.0</div></div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px;padding:4px 0">
+        <div style="width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#f59e0b,#f97316);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;color:#000">S</div>
+        <div>
+            <div style="font-size:18px;font-weight:700;letter-spacing:-0.03em;color:#fafafa">Sekta AI</div>
+            <div style="font-size:11px;color:#52525b;font-family:'JetBrains Mono';margin-top:-2px">v2.0 · Cloud</div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
-    
-    # Provider selector
-    st.markdown("<div style='font-size:11px;font-family:monospace;color:#8A8A90;letter-spacing:1px;margin-bottom:8px'>PROVIDER • CHOOSE AI</div>", unsafe_allow_html=True)
-    provider_names = list(PROVIDERS.keys())
-    provider = st.selectbox("Provider", provider_names, index=0, label_visibility="collapsed", key="provider_select")
-    st.session_state.provider = provider
-    prov = PROVIDERS[provider]
-    st.markdown(f"<div class='gold-card'><div style='font-weight:700;font-size:13px'>{provider}</div><div style='font-size:11px;color:#8A8A90;margin-top:4px'>Get key: {prov['signup']}</div></div>", unsafe_allow_html=True)
 
-    # API Key input
-    api_key = get_provider_key(prov["env_key"])
-    if not api_key or "YOUR_" in api_key:
-        st.warning(f"🔑 No key for {provider}. Add below or in Streamlit Secrets ({prov['env_key']}):")
-        key_input = st.text_input(f"{provider} API Key", type="password", placeholder=f"Paste your key here...")
-        if key_input:
-            st.session_state.api_key_input = key_input
+    # Provider
+    st.markdown("<div style='font-size:11px;font-weight:600;color:#52525b;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px'>Provider</div>", unsafe_allow_html=True)
+    prov_names = list(PROVIDERS.keys())
+    prov = st.radio("Provider", prov_names, label_visibility="collapsed",
+        format_func=lambda x: f"{PROVIDERS[x]['icon']}  {x}",
+        index=prov_names.index(st.session_state.provider),
+        key="prov_radio")
+    st.session_state.provider = prov
+    p = PROVIDERS[prov]
+
+    # Key status
+    key = get_key(p["env_key"])
+    if not key:
+        st.markdown(f"<div class='card' style='margin:12px 0'><div style='font-size:12px;color:#f59e0b;font-weight:600;margin-bottom:6px'>🔑 API Key Required</div><div style='font-size:11px;color:#71717a'>Get free key at <b>{p['signup']}</b></div></div>", unsafe_allow_html=True)
+        manual = st.text_input("API Key", type="password", placeholder="Paste your key here...", label_visibility="collapsed")
+        if manual:
+            st.session_state.manual_key = manual
             st.rerun()
     else:
-        st.success(f"✅ Key set • {api_key[:7]}...{api_key[-4:]}")
-        if st.button("🔄 Clear Key", use_container_width=True):
-            st.session_state.api_key_input = ""
-            st.rerun()
+        masked = f"{key[:6]}…{key[-4:]}"
+        st.markdown(f"<div style='font-size:11px;color:#22c55e;margin:8px 0'>✓ Connected · <code style='color:#52525b;background:#1e1e22;padding:2px 6px;border-radius:4px'>{masked}</code></div>", unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("<div style='font-size:11px;font-family:monospace;color:#8A8A90;letter-spacing:1px;margin-bottom:8px'>AGENTS • CHOOSE POWER</div>", unsafe_allow_html=True)
-    agent_id = st.selectbox("Agent", options=list(AGENTS.keys()), format_func=lambda x: f"{AGENTS[x]['icon']} {AGENTS[x]['name']}", label_visibility="collapsed")
-    selected_agent = AGENTS[agent_id]
-    st.markdown(f"<div class='gold-card'><div style='font-weight:700;font-size:13px'>{selected_agent['icon']} {selected_agent['name']}</div><div style='font-size:11px;color:#8A8A90;margin-top:4px'>{selected_agent['desc']}</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:10px;color:#3f3f46;margin:4px 0'>Models: {', '.join(p['models'][:2])}…</div>", unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("<div style='font-size:11px;font-family:monospace;color:#8A8A90;letter-spacing:1px'>MEMORY • LONG TERM</div>", unsafe_allow_html=True)
-    mem_query = st.text_input("Search memory", placeholder="e.g. my name, project...", label_visibility="collapsed")
+    st.markdown("<div style='height:1px;background:#27272a;margin:16px 0'></div>", unsafe_allow_html=True)
+
+    # Agent
+    st.markdown("<div style='font-size:11px;font-weight:600;color:#52525b;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px'>Agent</div>", unsafe_allow_html=True)
+    agent_options = list(AGENTS.keys())
+    agent_idx = agent_options.index(st.session_state.agent) if st.session_state.agent in agent_options else 0
+    agent = st.selectbox("Agent", agent_options, index=agent_idx, label_visibility="collapsed",
+        format_func=lambda x: f"{AGENTS[x]['icon']}  {AGENTS[x]['name']}")
+    st.session_state.agent = agent
+    a = AGENTS[agent]
+    st.markdown(f"<div class='card'><div style='font-weight:600;font-size:13px;color:#fafafa'>{a['icon']} {a['name']}</div><div style='font-size:12px;color:#71717a;margin-top:4px'>{a['desc']}</div></div>", unsafe_allow_html=True)
+
+    st.markdown("<div style='height:1px;background:#27272a;margin:16px 0'></div>", unsafe_allow_html=True)
+
+    # Model
+    st.markdown("<div style='font-size:11px;font-weight:600;color:#52525b;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px'>Model</div>", unsafe_allow_html=True)
+    model_list = p["models"]
+    default_m = p["default_model"]
+    m_idx = model_list.index(default_m) if default_m in model_list else 0
+    st.session_state.model = st.selectbox("Model", model_list, index=m_idx, label_visibility="collapsed")
+
+    st.markdown("<div style='height:1px;background:#27272a;margin:16px 0'></div>", unsafe_allow_html=True)
+
+    # Memory
+    st.markdown("<div style='font-size:11px;font-weight:600;color:#52525b;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px'>Memory</div>", unsafe_allow_html=True)
     if st.session_state.memories:
-        # simple filter
-        filtered = [m for m in st.session_state.memories if mem_query.lower() in m.lower()] if mem_query else st.session_state.memories
-        for mem in filtered[-5:][::-1]:
-            st.markdown(f"<div style='font-size:11px;background:#141415;border:1px solid #232325;padding:6px 8px;border-radius:8px;margin-bottom:4px'>💾 {mem[:80]}</div>", unsafe_allow_html=True)
+        for m in st.session_state.memories[-5:][::-1]:
+            st.markdown(f"<div style='font-size:11px;color:#a1a1aa;padding:6px 0;border-bottom:1px solid #1e1e22'>💾 {m[:60]}</div>", unsafe_allow_html=True)
     else:
-        st.caption("No memories yet. Say 'remember that...'")
+        st.markdown("<div style='font-size:11px;color:#3f3f46;padding:8px 0'>Say \"remember that…\" to save facts</div>", unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("**Model:**")
-    current_provider = st.session_state.get("provider", "Groq (FREE)")
-    provider_models = PROVIDERS[current_provider]["models"]
-    default_model = PROVIDERS[current_provider]["default_model"]
-    default_idx = provider_models.index(default_model) if default_model in provider_models else 0
-    st.session_state.model = st.selectbox("Model", provider_models, label_visibility="collapsed", index=default_idx)
-    
-    if st.button("🗑️ New Chat", use_container_width=True):
-        # save current to history
+    st.markdown("<div style='height:1px;background:#27272a;margin:16px 0'></div>", unsafe_allow_html=True)
+
+    # New chat
+    if st.button("✦  New Chat", use_container_width=True, type="primary"):
         if st.session_state.messages:
             st.session_state.chat_history.append({
-                "id": st.session_state.current_chat_id,
-                "title": st.session_state.messages[0]["content"][:40] if st.session_state.messages else "New Chat",
+                "id": st.session_state.chat_id,
+                "title": st.session_state.messages[0]["content"][:40] if st.session_state.messages else "Chat",
                 "messages": st.session_state.messages.copy(),
-                "agent": agent_id,
-                "time": datetime.now().isoformat()
+                "agent": agent,
+                "time": datetime.now().isoformat(),
             })
         st.session_state.messages = []
-        st.session_state.current_chat_id = str(uuid.uuid4())[:8]
-        st.session_state.uploaded_context = ""
+        st.session_state.chat_id = str(uuid.uuid4())[:8]
+        st.session_state.file_ctx = ""
         st.rerun()
 
-    # Chat history list
+    # History
     if st.session_state.chat_history:
-        st.markdown("<div style='font-size:11px;font-family:monospace;color:#8A8A90;margin-top:12px'>CHAT HISTORY</div>", unsafe_allow_html=True)
-        for ch in reversed(st.session_state.chat_history[-10:]):
-            if st.button(f"📝 {ch['title'][:30]}", key=f"hist_{ch['id']}", use_container_width=True):
+        st.markdown("<div style='font-size:11px;font-weight:600;color:#52525b;text-transform:uppercase;letter-spacing:0.08em;margin:16px 0 8px'>History</div>", unsafe_allow_html=True)
+        for ch in st.session_state.chat_history[-8:][::-1]:
+            if st.button(f"{'📝'} {ch['title'][:28]}", key=f"h_{ch['id']}", use_container_width=True):
                 st.session_state.messages = ch["messages"]
-                st.session_state.current_chat_id = ch["id"]
+                st.session_state.chat_id = ch["id"]
                 st.rerun()
 
-    st.divider()
-    st.caption("🏆 SEKTA GOLD — Streamlit Cloud Edition\nBetter than all bots.\nDeploy: push to GitHub → share.streamlit.io/deploy")
+# --- MAIN AREA ---
+# Header
+a = AGENTS[st.session_state.agent]
+st.markdown(f"""
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;padding:8px 0">
+    <div style="width:36px;height:36px;border-radius:10px;background:{a['color']}15;border:1px solid {a['color']}30;display:flex;align-items:center;justify-content:center;font-size:18px">{a['icon']}</div>
+    <div>
+        <div style="font-size:15px;font-weight:600;color:#fafafa">{a['name']}</div>
+        <div style="font-size:11px;color:#52525b">{st.session_state.model} · {st.session_state.provider.split(' (')[0]}</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-# --- MAIN CHAT AREA ---
-col1, col2 = st.columns([3,1]) if st.session_state.messages else (st.container(), None)
-
-with col1:
-    # Header
-    st.markdown(f"""
-    <div style='display:flex;align-items:center;gap:12px;margin-bottom:16px'>
-      <div style='font-size:28px'>{selected_agent['icon']}</div>
-      <div><div style='font-weight:800;font-size:20px;letter-spacing:-0.02em'>{selected_agent['name']} • <span style='font-weight:400;color:#FFC700'>STREAMLIT</span></div>
-      <div style='font-size:12px;color:#8A8A90'>{selected_agent['desc']} • {st.session_state.model} • Tools ON</div></div>
-      <div style='margin-left:auto'><span class='gold-badge'>● LIVE • STREAMLIT CLOUD</span></div>
+# Quick prompts (when empty)
+if not st.session_state.messages:
+    st.markdown("""
+    <div style="text-align:center;padding:60px 20px 40px">
+        <div style="width:64px;height:64px;border-radius:20px;background:linear-gradient(135deg,#f59e0b,#f97316);display:flex;align-items:center;justify-content:center;font-size:28px;margin:0 auto 20px;box-shadow:0 8px 32px rgba(245,158,11,0.2)">✦</div>
+        <h1 style="font-size:32px;font-weight:800;letter-spacing:-0.04em;color:#fafafa;margin:0">What can I help with?</h1>
+        <p style="color:#52525b;font-size:14px;margin-top:8px">Choose an agent and start chatting</p>
     </div>
     """, unsafe_allow_html=True)
 
-    if not st.session_state.messages:
-        st.markdown("""
-        <div style='text-align:center;padding:40px 20px;background:#0F0F10;border:1px solid #232325;border-radius:16px;margin-bottom:16px'>
-          <div style='width:64px;height:64px;border-radius:16px;background:linear-gradient(135deg,#FFC700,#FF8A00);display:flex;align-items:center;justify-content:center;font-size:32px;margin:0 auto 16px;box-shadow:0 0 40px rgba(255,199,0,0.2)'>🏆</div>
-          <div style='font-size:28px;font-weight:800;letter-spacing:-0.02em'>SEKTA GOLD</div>
-          <div style='color:#8A8A90;font-size:14px;margin-top:6px'>Better than every chatbot in history — now on Streamlit Cloud</div>
-          <div style='display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:24px;text-align:left;max-width:520px;margin-left:auto;margin-right:auto'>
-        """, unsafe_allow_html=True)
-        # Quick prompts
-        quick_prompts = [
-            "Build me a SaaS landing page in Streamlit",
-            "Search latest AI news today with sources",
-            "Generate luxury logo for Sekta Gold Cup, black & gold",
-            "Analyze this CSV and show charts",
-            "Remember my name is Alex and I love F1",
-            "Teach quantum computing like I'm 10"
-        ]
-        cols = st.columns(2)
-        for i, qp in enumerate(quick_prompts):
-            with cols[i%2]:
-                if st.button(f"→ {qp}", key=f"qp_{i}", use_container_width=True):
-                    st.session_state.prompt_clicked = qp
-                    st.rerun()
-        st.markdown("</div></div>", unsafe_allow_html=True)
+    prompts = [
+        ("💡", "Explain quantum computing", "like I'm 10"),
+        ("🔍", "Latest AI news today", "with sources"),
+        ("💻", "Build a Python REST API", "with FastAPI"),
+        ("📊", "Analyze this data", "upload CSV below"),
+        ("🎨", "Write viral tweets", "about startups"),
+        ("🦈", "Evaluate my startup idea", "be brutally honest"),
+    ]
+    cols = st.columns(3)
+    for i, (icon, main, sub) in enumerate(prompts):
+        with cols[i % 3]:
+            if st.button(f"{icon}  {main}", key=f"p_{i}", use_container_width=True):
+                st.session_state["_prompt_clicked"] = f"{main} {sub}"
+                st.rerun()
 
-    # Display messages
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"], avatar="🏆" if msg["role"]=="assistant" else "🧑‍🚀"):
-            st.markdown(msg["content"])
-            if "image_url" in msg and msg["image_url"]:
-                st.image(msg["image_url"], caption="Generated Image")
+# Display messages
+for msg in st.session_state.messages:
+    avatar = a["icon"] if msg["role"] == "assistant" else "👤"
+    with st.chat_message(msg["role"], avatar=avatar):
+        st.markdown(msg["content"])
+        if msg.get("image_url"):
+            st.image(msg["image_url"])
 
-    # File uploader area
-    uploaded_files = st.file_uploader("📎 Upload files (PDF, CSV, XLSX, DOCX, images) — they will be analyzed", accept_multiple_files=True, type=["pdf","txt","md","csv","xlsx","docx","png","jpg","jpeg","webp","py","js","json"], label_visibility="collapsed")
-    if uploaded_files:
-        context_parts = []
-        for f in uploaded_files:
-            ctx = parse_uploaded_file(f)
-            context_parts.append(ctx)
-        st.session_state.uploaded_context = "\n\n".join(context_parts)
-        st.markdown(f"<div class='gold-card'><span class='gold-badge'>📎 {len(uploaded_files)} files parsed</span><div style='font-size:12px;margin-top:8px;max-height:120px;overflow:auto;white-space:pre-wrap'>{st.session_state.uploaded_context[:2000]}</div></div>", unsafe_allow_html=True)
+# File uploader
+uploaded = st.file_uploader("📎 Attach files", type=["pdf","txt","md","csv","xlsx","docx","png","jpg","jpeg","py","js","json"],
+    label_visibility="collapsed", accept_multiple_files=True)
+if uploaded:
+    ctx_parts = []
+    for f in uploaded:
+        ctx_parts.append(f"### {f.name}\n{parse_file(f)}")
+    st.session_state.file_ctx = "\n\n".join(ctx_parts)
+    st.success(f"📎 {len(uploaded)} file(s) attached — ask me anything about them!")
 
-# Prompt input handling
-prompt_clicked = st.session_state.pop("prompt_clicked", None)
-user_input = st.chat_input(f"Message {selected_agent['name']}... try 'generate image of...' or 'search...'")
+# Chat input
+prompt = st.session_state.pop("_prompt_clicked", None) or st.chat_input(f"Message {a['name']}…")
 
-actual_prompt = prompt_clicked or user_input
-
-if actual_prompt:
-    # Check key
-    client, key = get_client()
-    if not client:
-        st.error(f"❌ No valid API key for {st.session_state.get('provider', 'Groq (FREE)')}. Add your key in the sidebar or in Streamlit Secrets.")
-        st.stop()
-    
-    # Handle memory extraction: "remember that..."
-    lower = actual_prompt.lower()
-    if "remember that" in lower or "remember my" in lower or "my name is" in lower:
-        fact = actual_prompt.replace("remember that","").replace("remember","").strip()
-        st.session_state.memories.append(fact)
-        st.toast(f"💾 Remembered: {fact[:50]}")
+if prompt:
+    # Memory extraction
+    low = prompt.lower()
+    if any(k in low for k in ["remember that", "remember my", "my name is", "i like", "i work at"]):
+        st.session_state.memories.append(prompt.replace("remember that", "").replace("remember", "").strip())
 
     # Add user message
-    st.session_state.messages.append({"role": "user", "content": actual_prompt})
-    with st.chat_message("user", avatar="🧑‍🚀"):
-        st.markdown(actual_prompt)
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user", avatar="👤"):
+        st.markdown(prompt)
 
-    # Build system prompt with memory + file context
-    system_prompt = selected_agent["prompt"]
+    # Build context
+    system = a["prompt"]
     if st.session_state.memories:
-        system_prompt += "\n\n[USER LONG-TERM MEMORIES]:\n" + "\n".join([f"- {m}" for m in st.session_state.memories[-10:]])
-    if st.session_state.uploaded_context:
-        system_prompt += f"\n\n[UPLOADED FILES CONTEXT]:\n{st.session_state.uploaded_context[:12000]}"
+        system += "\n\n[User memories]:\n" + "\n".join(f"- {m}" for m in st.session_state.memories[-10:])
+    if st.session_state.file_ctx:
+        system += f"\n\n[Attached files]:\n{st.session_state.file_ctx[:12000]}"
 
-    # Prepare messages for OpenAI
-    openai_messages = [{"role": "system", "content": system_prompt}]
-    for m in st.session_state.messages[-20:]: # last 20 for context
-        openai_messages.append({"role": m["role"], "content": m["content"]})
+    msgs = [{"role": "system", "content": system}]
+    for m in st.session_state.messages[-20:]:
+        msgs.append({"role": m["role"], "content": m["content"]})
 
-    # Check if user wants image generation explicitly
-    wants_image = any(k in lower for k in ["generate image", "create image", "make image", "logo for", "draw ", "generate logo", "dall-e", "image of"])
-    
-    with st.chat_message("assistant", avatar="🏆"):
-        message_placeholder = st.empty()
-        full_response = ""
-        tool_info = st.empty()
+    client, _ = get_client()
+    if not client:
+        st.error(f"🔑 No API key for **{st.session_state.provider}**. Add your key in the sidebar.")
+        st.stop()
 
-        # If image requested, handle separately for speed
-        if wants_image:
-            # Extract prompt
-            img_prompt = actual_prompt
-            # Remove trigger words
-            for t in ["generate image of", "generate image", "create image of", "create image", "make image of", "generate logo for", "logo for"]:
-                if t in lower:
-                    img_prompt = actual_prompt.lower().split(t)[-1].strip()
-                    break
-            if not img_prompt or len(img_prompt) < 5:
-                img_prompt = actual_prompt
-            tool_info.markdown(f"<span class='gold-badge'>🎨 Generating image: {img_prompt[:60]}...</span>", unsafe_allow_html=True)
-            url, revised = tool_generate_image(img_prompt)
-            if url:
-                full_response += f"Generated image for: **{img_prompt}**\n\n![Generated Image]({url})\n\n*Revised prompt: {revised}*"
-                message_placeholder.markdown(full_response)
-                st.session_state.messages.append({"role": "assistant", "content": full_response, "image_url": url})
+    with st.chat_message("assistant", avatar=a["icon"]):
+        placeholder = st.empty()
+        full = ""
+        try:
+            stream = client.chat.completions.create(
+                model=st.session_state.model,
+                messages=msgs,
+                stream=True,
+                temperature=0.7,
+                max_tokens=4000,
+            )
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    full += chunk.choices[0].delta.content
+                    placeholder.markdown(full + "▌")
+            placeholder.markdown(full)
+            st.session_state.messages.append({"role": "assistant", "content": full})
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "quota" in err.lower():
+                st.error("⚠️ Rate limit or quota exceeded. Try switching provider or adding credits.")
+            elif "401" in err or "api_key" in err.lower():
+                st.error("🔑 Invalid API key. Check your key in the sidebar.")
             else:
-                full_response = f"Image generation failed: {revised}. But here's concept: {img_prompt}"
-                message_placeholder.markdown(full_response)
-                st.session_state.messages.append({"role": "assistant", "content": full_response})
-        else:
-            # Normal chat with streaming + function calling simulation
-            # Define tools for OpenAI
-            tools = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "web_search",
-                        "description": "Search web for real-time info, news, prices, events. Always use for recent facts.",
-                        "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "num_results": {"type": "integer", "default": 5}}, "required": ["query"]}
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "generate_image",
-                        "description": "Generate image with DALL-E 3 for logos, art, diagrams",
-                        "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}, "size": {"type": "string", "default": "1024x1024"}}, "required": ["prompt"]}
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "remember_fact",
-                        "description": "Save important user fact to memory",
-                        "parameters": {"type": "object", "properties": {"fact": {"type": "string"}}, "required": ["fact"]}
-                    }
-                }
-            ]
-            
-            # Only use function calling with OpenAI — Groq/Gemini don't support it reliably
-            use_tools = st.session_state.get("provider", "Groq (FREE)") == "OpenAI (paid)"
-            
-            try:
-                stream = client.chat.completions.create(
-                    model=st.session_state.model,
-                    messages=openai_messages,
-                    tools=tools if use_tools else None,
-                    tool_choice="auto" if use_tools else None,
-                    stream=True,
-                    temperature=0.7,
-                    max_tokens=3000
-                )
-                
-                tool_calls_buffer = {}
-                for chunk in stream:
-                    delta = chunk.choices[0].delta
-                    if delta.content:
-                        full_response += delta.content
-                        message_placeholder.markdown(full_response + "▌")
-                    if delta.tool_calls:
-                        for tc in delta.tool_calls:
-                            idx = tc.index
-                            if idx not in tool_calls_buffer:
-                                tool_calls_buffer[idx] = {"id": "", "name": "", "args": ""}
-                            if tc.id:
-                                tool_calls_buffer[idx]["id"] += tc.id
-                            if tc.function:
-                                if tc.function.name:
-                                    tool_calls_buffer[idx]["name"] += tc.function.name
-                                if tc.function.arguments:
-                                    tool_calls_buffer[idx]["args"] += tc.function.arguments
-                
-                message_placeholder.markdown(full_response)
-                
-                # If tool calls found, execute them and get final answer
-                if tool_calls_buffer:
-                    # Add assistant tool call message
-                    openai_messages.append({
-                        "role": "assistant",
-                        "content": full_response or None,
-                        "tool_calls": [
-                            {"id": v["id"], "type": "function", "function": {"name": v["name"], "arguments": v["args"]}} for v in tool_calls_buffer.values()
-                        ]
-                    })
-                    
-                    for tc_data in tool_calls_buffer.values():
-                        t_name = tc_data["name"]
-                        try:
-                            t_args = json.loads(tc_data["args"] or "{}")
-                        except (json.JSONDecodeError, TypeError):
-                            t_args = {}
-                        
-                        tool_info.markdown(f"<span class='gold-badge'>🔧 Tool: {t_name} — {str(t_args)[:80]}</span>", unsafe_allow_html=True)
-                        
-                        if t_name == "web_search":
-                            res = tool_web_search(t_args.get("query",""), t_args.get("num_results",5))
-                            openai_messages.append({"role": "tool", "tool_call_id": tc_data["id"], "name": t_name, "content": res})
-                        elif t_name == "generate_image":
-                            url, rev = tool_generate_image(t_args.get("prompt",""), t_args.get("size","1024x1024"))
-                            if url:
-                                res = f"Image generated: {url} — revised: {rev}"
-                                openai_messages.append({"role": "tool", "tool_call_id": tc_data["id"], "name": t_name, "content": res})
-                                full_response += f"\n\n![Generated]({url})"
-                                message_placeholder.markdown(full_response)
-                            else:
-                                openai_messages.append({"role": "tool", "tool_call_id": tc_data["id"], "name": t_name, "content": f"Failed: {rev}"})
-                        elif t_name == "remember_fact":
-                            fact = t_args.get("fact","")
-                            st.session_state.memories.append(fact)
-                            openai_messages.append({"role": "tool", "tool_call_id": tc_data["id"], "name": t_name, "content": f"Saved: {fact}"})
-                    
-                    # Second call for final answer after tools
-                    tool_info.markdown(f"<span class='gold-badge'>✨ Finalizing answer with tool results...</span>", unsafe_allow_html=True)
-                    stream2 = client.chat.completions.create(
-                        model=st.session_state.model,
-                        messages=openai_messages,
-                        stream=True,
-                        temperature=0.7,
-                        max_tokens=3000
-                    )
-                    full_response = "" if not full_response.startswith("Generated image") else full_response + "\n\n"
-                    for chunk in stream2:
-                        if chunk.choices[0].delta.content:
-                            full_response += chunk.choices[0].delta.content
-                            message_placeholder.markdown(full_response + "▌")
-                    message_placeholder.markdown(full_response)
-                
-                # Save assistant message
-                st.session_state.messages.append({"role": "assistant", "content": full_response})
-                tool_info.empty()
-                
-            except Exception as e:
-                err_msg = str(e)
-                if "api_key" in err_msg.lower() or "401" in err_msg:
-                    st.error(f"🔑 API key error: {err_msg}. Check your key in the sidebar or Streamlit Secrets.")
-                else:
-                    st.error(f"Error: {err_msg}")
-                    full_response = f"Sorry, error: {err_msg[:500]}"
-                    st.session_state.messages.append({"role": "assistant", "content": full_response})
-
-    # Clear file context after use? Keep for session.
-    # st.rerun() # streaming handles
+                st.error(f"Error: {err[:300]}")
+            st.session_state.messages.append({"role": "assistant", "content": f"⚠️ Error: {err[:200]}"})
 
 # Footer
-st.markdown("---")
-st.markdown("<div style='text-align:center;color:#5A5A60;font-size:11px;font-family:monospace'>SEKTA GOLD CUP • Streamlit Cloud Edition • Better than all chatbots • Built with OpenAI + Streamlit • <a href='https://platform.openai.com/api-keys'>Revoke leaked key</a></div>", unsafe_allow_html=True)
+st.markdown("<div style='height:1px;background:#1e1e22;margin-top:32px'></div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:center;padding:16px 0;font-size:11px;color:#3f3f46;font-family:JetBrains Mono,monospace'>Sekta AI · Built with Streamlit · <a href='https://github.com/goldstarpalms-svg/Sekta-gold-cup' style='color:#52525b'>GitHub</a></div>", unsafe_allow_html=True)
