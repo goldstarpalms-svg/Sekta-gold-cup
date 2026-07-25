@@ -158,6 +158,12 @@ def get_client():
         return OpenAI(api_key=key, base_url=provider["base_url"]), key
     return OpenAI(api_key=key), key
 
+def get_tavily_key():
+    try:
+        return st.secrets["TAVILY_API_KEY"]
+    except Exception:
+        return os.getenv("TAVILY_API_KEY", "")
+
 # --- TOOLS ---
 def tool_web_search(query: str, num=5):
     tavily_key = get_tavily_key()
