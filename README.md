@@ -97,7 +97,26 @@ npm run dev
 # -> http://localhost:5173
 ```
 
-### 4. Docker (One Command)
+### 4. Streamlit Cloud (1-Click) — For "streamitt" deploy
+```bash
+# Already prepared for you! File: app.py
+# See DEPLOY_STREAMLIT.md for full guide
+
+# Local test:
+pip install -r requirements.txt
+streamlit run app.py
+
+# Deploy:
+# 1. Go to https://share.streamlit.io/deploy
+# 2. Repo: goldstarpalms-svg/Sekta-gold-cup
+# 3. Branch: arena/019f96ed-sekta-gold-cup
+# 4. Main file: app.py
+# 5. In Secrets add:
+# OPENAI_API_KEY="sk-proj-YOUR_NEW_KEY_AFTER_REVOKE"
+# Optional: TAVILY_API_KEY for real web search
+```
+
+### 5. Docker (One Command)
 ```bash
 docker-compose up --build
 ```
