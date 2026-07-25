@@ -56,7 +56,7 @@ PROVIDERS = {
 
 # --- AGENTS ---
 AGENTS = {
-    "sekta-omni": {"name": "Sekta Omni", "icon": "⭐", "color": "#f59e0b",
+    "sekta-omni": {"name": "Sekta Omni", "icon": "🤖", "color": "#f59e0b",
         "desc": "All-purpose assistant with tools",
         "prompt": "You are Sekta AI — a helpful, concise assistant. You have access to web search, image generation, code execution, Wikipedia, URL reading, and file analysis. When the user asks you to do something, USE your tools proactively. Be direct. Current date: 2026-07-25."},
     "code-titan": {"name": "Code Titan", "icon": "💻", "color": "#6366f1",
@@ -358,6 +358,12 @@ def detect_and_run_tool(user_msg, lower):
 
     return None, None
 
+def safe_avatar(icon):
+    """Ensure emoji is valid for Streamlit avatars."""
+    valid = {"🤖","🏆","💻","🔍","🎨","📊","📚","🦈","💛","⚡","💎","🧠","👤",
+             "⭐","🌟","💡","🚀","🎯","🔥","✨","📝","💬","🙋","🧑","👨","👩"}
+    return icon if icon in valid else "🤖"
+
 # =====================================================================
 # SESSION STATE
 # =====================================================================
@@ -515,7 +521,7 @@ if not st.session_state.messages:
 
 # Display messages
 for msg in st.session_state.messages:
-    av = a["icon"] if msg["role"] == "assistant" else "👤"
+    av = safe_avatar(a["icon"]) if msg["role"] == "assistant" else "👤"
     with st.chat_message(msg["role"], avatar=av):
         st.markdown(msg["content"])
         if msg.get("image_url"):
@@ -566,7 +572,7 @@ if prompt:
         st.error(f"🔑 No API key for **{st.session_state.provider}**. Add your key in the sidebar.")
         st.stop()
 
-    with st.chat_message("assistant", avatar=a["icon"]):
+    with st.chat_message("assistant", avatar=safe_avatar(a["icon"])):
         # Show tool badge if used
         if tool_name:
             st.markdown(f"<span style='background:#27272a;color:#f59e0b;padding:3px 10px;border-radius:100px;font-size:11px;font-family:JetBrains Mono,monospace'>{tool_name} ✓</span>", unsafe_allow_html=True)
