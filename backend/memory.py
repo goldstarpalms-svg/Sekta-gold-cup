@@ -120,7 +120,7 @@ class MemoryStore:
         params = [f"%{w}%" for w in words]
         try:
             rows = cur.execute(f"SELECT * FROM memories WHERE {like_clause} ORDER BY importance DESC, created_at DESC LIMIT ?", (*params, limit)).fetchall()
-        except:
+        except Exception:
             rows = cur.execute("SELECT * FROM memories ORDER BY importance DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
     

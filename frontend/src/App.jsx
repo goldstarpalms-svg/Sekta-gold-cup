@@ -112,11 +112,21 @@ export default function App() {
   }, [messages, streamContent])
   
   const createNewChat = async () => {
-    const res = await fetch('/api/chats', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({}) }).catch(()=>null)
-    // fallback local
+    try {
+      const res = await fetch(`/api/chats?title=New+Chat&agent_id=${selectedAgent.id}`, { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        const newChat = { id: data.chat_id, title: data.title || 'New Chat', agent_id: data.agent_id || selectedAgent.id, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+        setChats(prev => [newChat, ...prev])
+        setCurrentChatId(data.chat_id)
+        setMessages([])
+        return data.chat_id
+      }
+    } catch {}
+    // fallback local only if backend unreachable
     const id = Date.now().toString(36)
     const newChat = { id, title: 'New Chat', agent_id: selectedAgent.id, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
-    setChats([newChat, ...chats])
+    setChats(prev => [newChat, ...prev])
     setCurrentChatId(id)
     setMessages([])
     return id
@@ -126,12 +136,16 @@ export default function App() {
     setCurrentChatId(chatId)
     try {
       const res = await fetch(`/api/chats/${chatId}`)
-      const data = await res.json()
-      setMessages(data.messages || [])
-      const ag = agents.find(a => a.id === data.agent_id)
-      if (ag) setSelectedAgent(ag)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.messages && data.messages.length > 0) {
+          setMessages(data.messages)
+        }
+        const ag = agents.find(a => a.id === data.agent_id)
+        if (ag) setSelectedAgent(ag)
+      }
     } catch {
-      setMessages([])
+      // Chat may only exist locally, that's ok
     }
   }
   
@@ -194,8 +208,9 @@ export default function App() {
       const decoder = new TextDecoder()
       let full = ''
       let buffer = ''
+      let streamDone = false
       
-      while (true) {
+      while (!streamDone) {
         const { value, done } = await reader.read()
         if (done) break
         buffer += decoder.decode(value, { stream: true })
@@ -203,18 +218,15 @@ export default function App() {
         buffer = lines.pop() || ''
         
         for (const line of lines) {
+          if (streamDone) break
           if (!line.startsWith('data: ')) continue
           const dataStr = line.slice(6)
-          if (dataStr === '[DONE]') break
+          if (dataStr === '[DONE]') { streamDone = true; break }
           try {
             const data = JSON.parse(dataStr)
             if (data.type === 'content') {
               full += data.content
               setStreamContent(full)
-              // Detect canvas artifact
-              if (data.content.includes('```html') || data.content.includes('artifact')) {
-                // will be handled in final rendering
-              }
             } else if (data.type === 'tool_start') {
               setToolStatus(`🔧 ${data.tool}: ${JSON.stringify(data.args).slice(0,60)}...`)
             } else if (data.type === 'tool_result') {
@@ -230,7 +242,10 @@ export default function App() {
               full += `\n\n**Error:** ${data.error}`
               setStreamContent(full)
             } else if (data.type === 'done') {
-              full = data.full_content || full
+              // Use backend's final content only if we didn't accumulate anything
+              if (!full && data.full_content) {
+                full = data.full_content
+              }
               setStreamContent(full)
             }
           } catch (e) {
@@ -242,8 +257,9 @@ export default function App() {
       // Save final
       if (full) {
         setMessages([...newMessages, { role: 'assistant', content: full }])
-        // Update chat list title
-        setChats(prev => prev.map(c => c.id === chatId ? { ...c, title: newMessages[0].content.slice(0,40), updated_at: new Date().toISOString() } : c))
+        // Update chat title from latest user message
+        const firstUserMsg = newMessages.find(m => m.role === 'user')?.content || 'Chat'
+        setChats(prev => prev.map(c => c.id === chatId ? { ...c, title: firstUserMsg.slice(0,40), updated_at: new Date().toISOString() } : c))
       }
       
     } catch (err) {
