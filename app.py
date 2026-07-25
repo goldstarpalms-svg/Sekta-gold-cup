@@ -116,7 +116,7 @@ def get_openai_key():
     key = None
     try:
         key = st.secrets["OPENAI_API_KEY"]
-    except (KeyError, AttributeError):
+    except Exception:
         pass
     if not key:
         key = os.getenv("OPENAI_API_KEY")
@@ -127,7 +127,7 @@ def get_openai_key():
 def get_tavily_key():
     try:
         return st.secrets["TAVILY_API_KEY"]
-    except (KeyError, AttributeError):
+    except Exception:
         return os.getenv("TAVILY_API_KEY", "")
 
 def get_client():
