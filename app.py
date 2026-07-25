@@ -9,7 +9,7 @@ import os, json, base64, time, uuid, re, io, sys, traceback, subprocess, tempfil
 from datetime import datetime
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Sekta AI", page_icon="✦", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Sekta AI", page_icon="⭐", layout="wide", initial_sidebar_state="expanded")
 
 # --- CSS ---
 st.markdown("""
@@ -56,7 +56,7 @@ PROVIDERS = {
 
 # --- AGENTS ---
 AGENTS = {
-    "sekta-omni": {"name": "Sekta Omni", "icon": "✦", "color": "#f59e0b",
+    "sekta-omni": {"name": "Sekta Omni", "icon": "⭐", "color": "#f59e0b",
         "desc": "All-purpose assistant with tools",
         "prompt": "You are Sekta AI — a helpful, concise assistant. You have access to web search, image generation, code execution, Wikipedia, URL reading, and file analysis. When the user asks you to do something, USE your tools proactively. Be direct. Current date: 2026-07-25."},
     "code-titan": {"name": "Code Titan", "icon": "💻", "color": "#6366f1",
@@ -450,7 +450,7 @@ with st.sidebar:
     st.markdown("<div style='height:1px;background:#27272a;margin:16px 0'></div>", unsafe_allow_html=True)
 
     # New chat
-    if st.button("✦  New Chat", use_container_width=True, type="primary"):
+    if st.button("⭐  New Chat", use_container_width=True, type="primary"):
         if st.session_state.messages:
             st.session_state.chat_history.append({
                 "id": st.session_state.chat_id,
@@ -489,7 +489,7 @@ st.markdown(f"""
 if not st.session_state.messages:
     st.markdown("""
     <div style="text-align:center;padding:40px 20px 20px">
-        <div style="width:64px;height:64px;border-radius:20px;background:linear-gradient(135deg,#f59e0b,#f97316);display:flex;align-items:center;justify-content:center;font-size:28px;margin:0 auto 20px;box-shadow:0 8px 32px rgba(245,158,11,0.2)">✦</div>
+        <div style="width:64px;height:64px;border-radius:20px;background:linear-gradient(135deg,#f59e0b,#f97316);display:flex;align-items:center;justify-content:center;font-size:28px;margin:0 auto 20px;box-shadow:0 8px 32px rgba(245,158,11,0.2)">⭐</div>
         <h1 style="font-size:32px;font-weight:800;letter-spacing:-0.04em;color:#fafafa;margin:0">What can I help with?</h1>
         <p style="color:#52525b;font-size:14px;margin-top:8px">8 agents · web search · image gen · code runner · Wikipedia · charts</p>
     </div>
