@@ -20,6 +20,8 @@ detection, alerting, and hardening artifacts for your own servers and edge.
 | 🔍 **File Integrity** | SHA-256 baselines + change detection for important files. |
 | 💾 **Encrypted Backup** | Generate a `tar` + `gpg` backup script with a retention policy. |
 | 📜 **auth.log Analyzer** | Detect brute-force SSH attempts and rank offending IPs; send a Slack summary. |
+| 🤖 **AI Security Advisor** | LLM reads your dashboard context (brute-force IPs, geolocations) and writes plain-English analysis + defensive recommendations. |
+| 💬 **AI Assistant** | General-purpose technical chat — strong across coding, research, writing, data — via Groq / Gemini / OpenAI (you pick per session). |
 
 **Architecture note:** the Streamlit app is a *generator + dashboard*. It never
 runs subprocess commands on the host it runs on. Scripts it produces (canary
@@ -48,8 +50,12 @@ Put sensitive values in `.streamlit/secrets.toml` (see
 |-----|----------|-------|
 | `SLACK_WEBHOOK_URL` | For alerting | Create at https://api.slack.com/messaging/webhooks |
 | `IPAPI_KEY` | Optional | Higher ipapi.co limits; free tier works without it |
+| `GROQ_API_KEY` | For AI (any one) | Free: console.groq.com/keys |
+| `GEMINI_API_KEY` | For AI (any one) | Free: aistudio.google.com/apikey |
+| `OPENAI_API_KEY` | For AI (any one) | Paid: platform.openai.com/api-keys |
 
-Webhook URLs are masked in the UI and never hardcoded.
+Webhook URLs are masked in the UI and never hardcoded. The AI tabs work with
+**any one** provider key; blank ones are skipped gracefully.
 
 ## Deploy
 

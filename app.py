@@ -15,6 +15,10 @@ What it does (each is a standard blue-team control):
   * File integrity monitor      - SHA-256 baselines + change detection
   * Encrypted backup generator  - tar + gpg backup script with retention
   * auth.log analyzer           - detect brute-force SSH attempts
+  * AI security advisor         - LLM explains threats + recommends defensive
+                                  actions (reads your dashboard context)
+  * AI assistant                - general-purpose technical chat via Groq /
+                                  Gemini / OpenAI (OpenAI-compatible API)
 
 Design notes:
   * The Streamlit app is a GENERATOR + DASHBOARD. It never runs subprocess
@@ -185,6 +189,93 @@ def kv_card(label: str, value, sub: str = ""):
 
 
 # --------------------------------------------------------------------------
+# AI PROVIDERS (OpenAI-compatible /chat/completions: Groq, Gemini, OpenAI)
+# --------------------------------------------------------------------------
+AI_PROVIDERS = {
+    "Groq (Free)": {
+        "icon": "⚡", "env_key": "GROQ_API_KEY", "signup": "console.groq.com/keys",
+        "base_url": "https://api.groq.com/openai/v1",
+        "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+        "default_model": "llama-3.3-70b-versatile",
+    },
+    "Gemini (Free)": {
+        "icon": "💎", "env_key": "GEMINI_API_KEY", "signup": "aistudio.google.com/apikey",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "models": ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
+        "default_model": "gemini-2.0-flash",
+    },
+    "OpenAI": {
+        "icon": "🧠", "env_key": "OPENAI_API_KEY", "signup": "platform.openai.com/api-keys",
+        "base_url": "https://api.openai.com/v1",
+        "models": ["gpt-4o", "gpt-4o-mini"],
+        "default_model": "gpt-4o-mini",
+    },
+}
+
+
+def ai_key_ok(provider_name: str) -> bool:
+    return bool(load_secret(AI_PROVIDERS[provider_name]["env_key"]))
+
+
+def ai_picker():
+    """Render provider + model selectors. Returns (provider_name, model)."""
+    cols = st.columns([1, 1])
+    with cols[0]:
+        provider_name = st.selectbox(
+            "Model provider", list(AI_PROVIDERS.keys()),
+            format_func=lambda n: f"{AI_PROVIDERS[n]['icon']} {n}", key="ai_provider",
+        )
+    prov = AI_PROVIDERS[provider_name]
+    with cols[1]:
+        model = st.selectbox("Model", prov["models"], key=f"ai_model_{provider_name}")
+    if not ai_key_ok(provider_name):
+        st.warning(
+            f"No `{prov['env_key']}` set. Get a free key at **{prov['signup']}**, add it to "
+            f"`.streamlit/secrets.toml` (or env), then reload."
+        )
+    return provider_name, model
+
+
+def stream_chat(messages, provider_name: str, model: str, temperature: float = 0.4):
+    """Stream an OpenAI-compatible chat completion. Yields text deltas.
+
+    Works identically across Groq, Gemini (OpenAI-compat), and OpenAI.
+    """
+    prov = AI_PROVIDERS[provider_name]
+    api_key = load_secret(prov["env_key"])
+    if not api_key:
+        yield "⚠️ No API key configured for this provider. Set it in Streamlit secrets."
+        return
+    if not _HAS_HTTPX:
+        yield "⚠️ httpx is not installed (it's in requirements.txt)."
+        return
+    url = prov["base_url"].rstrip("/") + "/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {"model": model, "messages": messages, "stream": True, "temperature": temperature}
+    try:
+        with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            with client.stream("POST", url, headers=headers, json=payload) as r:
+                if r.status_code != 200:
+                    body = r.read().decode("utf-8", "ignore")[:400]
+                    yield f"⚠️ API error HTTP {r.status_code}: {body}"
+                    return
+                for line in r.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        delta = json.loads(data)["choices"][0]["delta"].get("content")
+                        if delta:
+                            yield delta
+                    except Exception:  # noqa: BLE001 - skip malformed keepalive chunks
+                        continue
+    except Exception as e:  # noqa: BLE001
+        yield f"⚠️ Request failed: {e}"
+
+
+# --------------------------------------------------------------------------
 # SECTIONS
 # --------------------------------------------------------------------------
 def header(title: str, subtitle: str):
@@ -221,6 +312,8 @@ def section_overview():
         ("File Integrity", "SHA-256 baselines and change detection for important files."),
         ("Encrypted Backup", "Generate a tar + gpg backup script with retention policy."),
         ("auth.log Analyzer", "Detect brute-force SSH patterns and rank offending IPs."),
+        ("AI Security Advisor", "LLM explains threats + recommends defensive actions from your dashboard data."),
+        ("AI Assistant", "General-purpose technical chat — Groq, Gemini, or OpenAI."),
     ]
     st.table(pd.DataFrame(rows, columns=["Tool", "Purpose"]))
 
@@ -568,6 +661,7 @@ def section_authlog():
     total_fail = sum(failed_by_ip.values())
     bf_threshold = st.slider("Brute-force threshold (failures/IP)", min_value=3, max_value=100, value=10)
     brute = {ip: n for ip, n in failed_by_ip.items() if n >= bf_threshold}
+    st.session_state["bf_findings"] = brute  # consumed by the AI Security Advisor
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Failed attempts", total_fail)
@@ -605,18 +699,130 @@ def section_authlog():
 
 
 # --------------------------------------------------------------------------
+# AI SECTIONS
+# --------------------------------------------------------------------------
+ASSISTANT_SYSTEM = (
+    "You are Sekta, a highly capable technical assistant, strong across software engineering, "
+    "data & analytics, security, cloud/infrastructure, research, and writing. Be concise, accurate, "
+    "and practical; use code blocks where helpful. Refuse requests to build offensive/attack tooling "
+    "and steer toward legitimate, defensive use."
+)
+
+SUGGESTIONS = [
+    "Explain OAuth2 vs. session cookies",
+    "Write Python to dedupe a list of dicts by a key",
+    "How do I harden an SSH server?",
+    "Explain this regex: ^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$",
+]
+
+
+def section_ai_assistant():
+    header("AI Assistant", "General-purpose technical assistant — Groq, Gemini, or OpenAI.")
+    provider_name, model = ai_picker()
+
+    if "ai_messages" not in st.session_state:
+        st.session_state["ai_messages"] = []
+
+    tcol1, tcol2 = st.columns([1, 5])
+    with tcol1:
+        if st.button("🗑️ Clear chat", use_container_width=True):
+            st.session_state["ai_messages"] = []
+            st.rerun()
+    with tcol2:
+        st.caption(f"Provider: **{AI_PROVIDERS[provider_name]['icon']} {provider_name}** · Model: `{model}`")
+
+    for m in st.session_state["ai_messages"]:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+
+    # Empty-state suggestion chips
+    if not st.session_state["ai_messages"]:
+        for i, s in enumerate(SUGGESTIONS):
+            if st.button(s, key=f"sug_{i}"):
+                st.session_state["pending_prompt"] = s
+                st.rerun()
+
+    prompt = st.chat_input("Ask anything — code, debug, explain, plan, analyze…") or \
+        st.session_state.pop("pending_prompt", None)
+
+    if prompt:
+        st.session_state["ai_messages"].append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        with st.chat_message("assistant"):
+            history = st.session_state["ai_messages"][-20:]
+            msgs = [{"role": "system", "content": ASSISTANT_SYSTEM}] + \
+                [{"role": m["role"], "content": m["content"]} for m in history]
+            placeholder = st.empty()
+            collected = []
+            with st.spinner("Thinking…"):
+                for delta in stream_chat(msgs, provider_name, model):
+                    collected.append(delta)
+                    placeholder.markdown("".join(collected))
+            answer = "".join(collected)
+            placeholder.markdown(answer or "_(no response)_")
+        st.session_state["ai_messages"].append({"role": "assistant", "content": answer})
+
+
+ADVISOR_SYSTEM = (
+    "You are Sekta Shield, a defensive security analyst. Using the context provided, explain what is "
+    "happening in plain English, assess severity, and recommend ONLY legitimate, DEFENSIVE actions "
+    "(e.g., Fail2Ban bans, Cloudflare WAF rules, patching, hardening, monitoring, isolation). Refuse "
+    "any request that would facilitate attacks, exploitation, or unauthorized access. Use short "
+    "sections: **Summary**, **Risk**, **Recommended actions**."
+)
+
+
+def _advisor_context() -> str:
+    parts = []
+    bf = st.session_state.get("bf_findings")
+    if bf:
+        lines = [f"- {ip} — {n} failed logins" for ip, n in sorted(bf.items(), key=lambda x: -x[1])[:15]]
+        parts.append("Brute-force IPs detected (auth.log Analyzer tab):\n" + "\n".join(lines))
+    geo = st.session_state.get("geo_rows")
+    if geo:
+        lines = [f"- {r.get('IP')} — {r.get('Country')}, {r.get('City')}, {r.get('Org/ISP')}" for r in geo[:15]]
+        parts.append("Geolocated IPs (IP Geolocation tab):\n" + "\n".join(lines))
+    return ("\nContext pulled from this dashboard:\n" + "\n".join(parts) + "\n\n") if parts else ""
+
+
+def section_ai_advisor():
+    header("AI Security Advisor", "Plain-English threat analysis + defensive recommendations.")
+    provider_name, model = ai_picker()
+
+    ctx = _advisor_context()
+    situation = st.text_area(
+        "Describe the situation or paste logs (auth.log lines, IPs, alerts)…",
+        value=ctx, height=170, key="advisor_input",
+    )
+    ready = bool(situation.strip()) and ai_key_ok(provider_name)
+    if st.button("Analyze", type="primary", disabled=not ready):
+        msgs = [{"role": "system", "content": ADVISOR_SYSTEM}, {"role": "user", "content": situation}]
+        with st.chat_message("assistant"):
+            placeholder = st.empty()
+            out = []
+            with st.spinner("Analyzing…"):
+                for delta in stream_chat(msgs, provider_name, model, temperature=0.2):
+                    out.append(delta)
+                    placeholder.markdown("".join(out))
+            placeholder.markdown("".join(out) or "_(no response)_")
+
+
+# --------------------------------------------------------------------------
 # NAV
 # --------------------------------------------------------------------------
 NAV = {
     "📊 Overview": section_overview,
     "🔔 Slack Alerts": section_alerts,
     "🍯 Honeypot Canaries": section_honeypot,
+    "🤖 AI Security Advisor": section_ai_advisor,
     "🌍 IP Geolocation": section_geo,
     "🚫 Fail2Ban Builder": section_fail2ban,
     "☁️ Cloudflare WAF": section_waf,
     "🔍 File Integrity": section_fim,
     "💾 Encrypted Backup": section_backup,
     "📜 auth.log Analyzer": section_authlog,
+    "💬 AI Assistant": section_ai_assistant,
 }
 
 
