@@ -38,6 +38,7 @@ import hashlib
 import zipfile
 from datetime import datetime, timezone
 from collections import Counter, defaultdict
+from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
@@ -276,6 +277,82 @@ def stream_chat(messages, provider_name: str, model: str, temperature: float = 0
 
 
 # --------------------------------------------------------------------------
+# WEB SEARCH (multi-source, robust, no hard dependency)
+# --------------------------------------------------------------------------
+_UA = {"User-Agent": "sekta-cybershield/1.0 (+defensive use)"}
+
+
+def _tavily_results(query: str, max_results: int = 5):
+    """Tavily (AI-friendly) search. Requires TAVILY_API_KEY."""
+    key = load_secret("TAVILY_API_KEY")
+    if not key or not _HAS_HTTPX:
+        return []
+    try:
+        from tavily import TavilyClient  # in requirements.txt
+        res = TavilyClient(key).search(query, max_results=max_results)
+        return [
+            {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")}
+            for r in res.get("results", [])
+        ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _wikipedia_results(query: str, max_results: int = 3):
+    """Wikipedia MediaWiki search. No key required."""
+    if not _HAS_HTTPX:
+        return []
+    out = []
+    try:
+        with httpx.Client(timeout=15.0, headers=_UA) as c:
+            r = c.get("https://en.wikipedia.org/w/api.php", params={
+                "action": "query", "list": "search", "srlimit": max_results,
+                "format": "json", "srsearch": query, "srprop": "snippet",
+            })
+            for h in r.json().get("query", {}).get("search", []):
+                title = h["title"]
+                snippet = re.sub(r"<[^>]+>", "", h.get("snippet", ""))
+                out.append({"title": title,
+                            "url": "https://en.wikipedia.org/wiki/" + quote(title),
+                            "snippet": snippet})
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _ddg_instant_answer(query: str):
+    """DuckDuckGo Instant Answer API. No key required."""
+    if not _HAS_HTTPX:
+        return []
+    try:
+        with httpx.Client(timeout=15.0, headers=_UA) as c:
+            d = c.get("https://api.duckduckgo.com/", params={
+                "q": query, "format": "json", "no_html": 1, "skip_disambig": 1,
+            }).json()
+        if d.get("AbstractText"):
+            return [{"title": d.get("Heading", query),
+                     "url": d.get("AbstractURL", "https://duckduckgo.com/?q=" + quote(query)),
+                     "snippet": d["AbstractText"]}]
+    except Exception:  # noqa: BLE001
+        pass
+    return []
+
+
+def web_search(query: str, max_results: int = 5):
+    """Multi-source web search -> normalized {title, url, snippet} dicts.
+
+    Order: Tavily (if key) -> Wikipedia -> DuckDuckGo Instant Answer.
+    Always returns something when any source works; never raises.
+    """
+    res = _tavily_results(query, max_results)
+    if res:
+        return res[:max_results]
+    res = _wikipedia_results(query, max_results=3)
+    res += _ddg_instant_answer(query)
+    return res[:max_results]
+
+
+# --------------------------------------------------------------------------
 # SECTIONS
 # --------------------------------------------------------------------------
 def header(title: str, subtitle: str):
@@ -313,7 +390,7 @@ def section_overview():
         ("Encrypted Backup", "Generate a tar + gpg backup script with retention policy."),
         ("auth.log Analyzer", "Detect brute-force SSH patterns and rank offending IPs."),
         ("AI Security Advisor", "LLM explains threats + recommends defensive actions from your dashboard data."),
-        ("AI Assistant", "General-purpose technical chat — Groq, Gemini, or OpenAI."),
+        ("AI Assistant", "General-purpose technical chat with optional live web search — Groq, Gemini, or OpenAI."),
     ]
     st.table(pd.DataFrame(rows, columns=["Tool", "Purpose"]))
 
@@ -723,13 +800,16 @@ def section_ai_assistant():
     if "ai_messages" not in st.session_state:
         st.session_state["ai_messages"] = []
 
-    tcol1, tcol2 = st.columns([1, 5])
+    tcol1, tcol2, tcol3 = st.columns([1, 2, 3])
     with tcol1:
         if st.button("🗑️ Clear chat", use_container_width=True):
             st.session_state["ai_messages"] = []
             st.rerun()
     with tcol2:
-        st.caption(f"Provider: **{AI_PROVIDERS[provider_name]['icon']} {provider_name}** · Model: `{model}`")
+        web_on = st.toggle("🔍 Web search", value=False, key="ai_web",
+                           help="Pull live results (Tavily if key set, else Wikipedia/DuckDuckGo) into the answer")
+    with tcol3:
+        st.caption(f"{AI_PROVIDERS[provider_name]['icon']} {provider_name} · `{model}`")
 
     for m in st.session_state["ai_messages"]:
         with st.chat_message(m["role"]):
@@ -753,13 +833,24 @@ def section_ai_assistant():
             history = st.session_state["ai_messages"][-20:]
             msgs = [{"role": "system", "content": ASSISTANT_SYSTEM}] + \
                 [{"role": m["role"], "content": m["content"]} for m in history]
+            sources_md = ""
+            if web_on:
+                with st.spinner("Searching the web…"):
+                    results = web_search(prompt)
+                if results:
+                    ctx = "\n\n".join(f"[{i+1}] {r['title']} ({r['url']}):\n{r['snippet']}"
+                                      for i, r in enumerate(results))
+                    msgs.append({"role": "system", "content":
+                                 "Relevant live web results (cite by number; prefer these for factual claims):\n" + ctx})
+                    sources_md = "\n\n**Sources:**\n" + "\n".join(
+                        f"{i+1}. [{r['title']}]({r['url']})" for i, r in enumerate(results))
             placeholder = st.empty()
             collected = []
             with st.spinner("Thinking…"):
                 for delta in stream_chat(msgs, provider_name, model):
                     collected.append(delta)
                     placeholder.markdown("".join(collected))
-            answer = "".join(collected)
+            answer = "".join(collected) + sources_md
             placeholder.markdown(answer or "_(no response)_")
         st.session_state["ai_messages"].append({"role": "assistant", "content": answer})
 
@@ -806,6 +897,45 @@ def section_ai_advisor():
                     out.append(delta)
                     placeholder.markdown("".join(out))
             placeholder.markdown("".join(out) or "_(no response)_")
+
+    st.divider()
+    st.markdown("### ⚙️ AI-generated hardening configs")
+    bf = st.session_state.get("bf_findings") or {}
+    geo = st.session_state.get("geo_rows") or []
+    ipset = sorted(set(list(bf.keys()) + [
+        r.get("IP") for r in geo if r.get("IP") and not str(r.get("IP")).startswith("(")]))
+    if not ipset:
+        st.info("No attacker IPs in this session yet. Run the **📜 auth.log Analyzer** or "
+                "**🌍 IP Geolocation** tab first, then return here to auto-generate bans.")
+    else:
+        st.caption("Targeting: " + ", ".join(f"`{ip}`" for ip in ipset[:20]) +
+                   (" …" if len(ipset) > 20 else ""))
+        if st.button("Generate Fail2Ban + Cloudflare WAF config", type="primary",
+                     disabled=not ai_key_ok(provider_name)):
+            fix_user = (
+                "Generate ready-to-paste DEFENSIVE hardening artifacts for these attacker source IPs:\n"
+                + ", ".join(ipset) + "\n\n"
+                "Produce exactly two fenced code blocks:\n"
+                "1) A Fail2Ban jail.local entry plus a filter failregex that bans these source IPs.\n"
+                "2) A Cloudflare WAF custom-rule expression that blocks these IPs.\n"
+                "Add a one-line explanation before each block. Hardening only; nothing offensive."
+            )
+            msgs = [{"role": "system", "content":
+                     "You are a defensive security engineer. Output only legitimate hardening "
+                     "configuration. Refuse any offensive request."},
+                    {"role": "user", "content": fix_user}]
+            cfg = []
+            with st.chat_message("assistant"):
+                ph = st.empty()
+                with st.spinner("Generating configs…"):
+                    for delta in stream_chat(msgs, provider_name, model, temperature=0.1):
+                        cfg.append(delta)
+                        ph.markdown("".join(cfg))
+                text = "".join(cfg)
+                ph.markdown(text or "_(no response)_")
+                if text:
+                    st.download_button("⬇️ Download ai_hardening_configs.txt",
+                                       text.encode("utf-8"), file_name="ai_hardening_configs.txt")
 
 
 # --------------------------------------------------------------------------

@@ -21,7 +21,7 @@ detection, alerting, and hardening artifacts for your own servers and edge.
 | 💾 **Encrypted Backup** | Generate a `tar` + `gpg` backup script with a retention policy. |
 | 📜 **auth.log Analyzer** | Detect brute-force SSH attempts and rank offending IPs; send a Slack summary. |
 | 🤖 **AI Security Advisor** | LLM reads your dashboard context (brute-force IPs, geolocations) and writes plain-English analysis + defensive recommendations. |
-| 💬 **AI Assistant** | General-purpose technical chat — strong across coding, research, writing, data — via Groq / Gemini / OpenAI (you pick per session). |
+| 💬 **AI Assistant** | General-purpose technical chat — strong across coding, research, writing, data — via Groq / Gemini / OpenAI. Toggle **🔍 Web search** to inject live results (Tavily if keyed, else Wikipedia/DuckDuckGo) with citations. |
 
 **Architecture note:** the Streamlit app is a *generator + dashboard*. It never
 runs subprocess commands on the host it runs on. Scripts it produces (canary
@@ -53,9 +53,12 @@ Put sensitive values in `.streamlit/secrets.toml` (see
 | `GROQ_API_KEY` | For AI (any one) | Free: console.groq.com/keys |
 | `GEMINI_API_KEY` | For AI (any one) | Free: aistudio.google.com/apikey |
 | `OPENAI_API_KEY` | For AI (any one) | Paid: platform.openai.com/api-keys |
+| `TAVILY_API_KEY` | Optional | Higher-quality web search in the AI Assistant; works without it via Wikipedia/DuckDuckGo |
 
 Webhook URLs are masked in the UI and never hardcoded. The AI tabs work with
-**any one** provider key; blank ones are skipped gracefully.
+**any one** provider key; blank ones are skipped gracefully. Web search works
+**without any key** (Wikipedia + DuckDuckGo Instant Answer); add a Tavily key
+to upgrade to AI-optimized results.
 
 ## Deploy
 
