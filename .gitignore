@@ -1,0 +1,32 @@
+# Secrets
+.env
+*.key
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+backend/data/
+backend/memory_store/
+*.db
+*.sqlite
+
+# Node
+node_modules/
+frontend/dist/
+frontend/build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Uploads & Generated
+uploads/
+generated_images/
+chats_export/
+
+# Logs
+*.log
