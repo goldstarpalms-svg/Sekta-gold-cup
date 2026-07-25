@@ -95,7 +95,7 @@ TOOL_DEFINITIONS = [
 
 async def tool_web_search(query: str, num_results: int = 5) -> str:
     """Tavily > SerpAPI > DuckDuckGo fallback"""
-    from .config import config
+    from config import config
     
     results_text = ""
     
@@ -137,7 +137,7 @@ async def tool_web_search(query: str, num_results: int = 5) -> str:
     return results_text[:4000]
 
 async def tool_generate_image(prompt: str, size="1024x1024", quality="hd") -> str:
-    from .config import config
+    from config import config
     if not config.OPENAI_API_KEY:
         return "Error: OPENAI_API_KEY not set"
     
@@ -210,7 +210,7 @@ except:
         return f"Execution error: {e}"
 
 async def tool_remember_fact(fact: str, importance=5, tags="") -> str:
-    from .memory import memory_store
+    from memory import memory_store
     mem_id = memory_store.add_memory(fact, importance=importance, tags=tags)
     return f"Fact saved to long-term memory: '{fact}' (id={mem_id}, importance={importance})"
 

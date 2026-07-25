@@ -71,12 +71,17 @@ class TTSRequest(BaseModel):
     voice: str = "alloy"
     model: Optional[str] = None
 
-# --- OpenAI Client Helper ---
+# --- OpenAI Client Helper (cached singleton) ---
+_openai_client = None
+
 def get_openai_client():
+    global _openai_client
     if not config.OPENAI_API_KEY or "YOUR_NEW_KEY" in config.OPENAI_API_KEY:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY not set. Create .env from .env.example")
-    from openai import AsyncOpenAI
-    return AsyncOpenAI(api_key=config.OPENAI_API_KEY)
+    if _openai_client is None:
+        from openai import AsyncOpenAI
+        _openai_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
+    return _openai_client
 
 # --- Routes ---
 
@@ -335,7 +340,7 @@ async def chat_stream(request: ChatRequest):
                         tool_name = tc_data["name"]
                         try:
                             args = json.loads(tc_data["arguments"] or "{}")
-                        except:
+                        except (json.JSONDecodeError, TypeError):
                             args = {}
                         
                         yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': args})}\n\n"
@@ -367,7 +372,7 @@ async def chat_stream(request: ChatRequest):
                             msgs = chat["messages"]
                             # Append latest user + assistant
                             # Reconstruct from request.messages (last) + assistant
-                            last_user = request.messages[-1].dict() if request.messages else {}
+                            last_user = request.messages[-1].model_dump() if request.messages else {}
                             msgs.append(last_user)
                             msgs.append({"role": "assistant", "content": final_assistant_msg})
                             # Title generation if first chat

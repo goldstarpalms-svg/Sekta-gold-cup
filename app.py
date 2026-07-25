@@ -115,8 +115,8 @@ def get_openai_key():
     # Priority: st.secrets > env > sidebar input
     key = None
     try:
-        key = st.secrets.get("OPENAI_API_KEY")
-    except:
+        key = st.secrets["OPENAI_API_KEY"]
+    except (KeyError, AttributeError):
         pass
     if not key:
         key = os.getenv("OPENAI_API_KEY")
@@ -126,8 +126,8 @@ def get_openai_key():
 
 def get_tavily_key():
     try:
-        return st.secrets.get("TAVILY_API_KEY")
-    except:
+        return st.secrets["TAVILY_API_KEY"]
+    except (KeyError, AttributeError):
         return os.getenv("TAVILY_API_KEY", "")
 
 def get_client():
@@ -159,7 +159,7 @@ def tool_web_search(query: str, num=5):
             data = resp.json()
             if data.get('AbstractText'):
                 results += f"DuckDuckGo: {data['AbstractText']} — {data.get('AbstractURL')}\n"
-    except:
+    except Exception:
         pass
     if not results:
         results = f"No live search available (add TAVILY_API_KEY in Streamlit Secrets for real search). Answering '{query}' from knowledge but note data may not be real-time."
@@ -302,7 +302,7 @@ with st.sidebar:
     st.caption("🏆 SEKTA GOLD — Streamlit Cloud Edition\nBetter than all bots.\nDeploy: push to GitHub → share.streamlit.io/deploy")
 
 # --- MAIN CHAT AREA ---
-col1, col2 = st.columns([3,1]) if st.session_state.messages else (st.columns([1,0])[0], None)
+col1, col2 = st.columns([3,1]) if st.session_state.messages else (st.container(), None)
 
 with col1:
     # Header
@@ -501,7 +501,7 @@ if actual_prompt:
                         t_name = tc_data["name"]
                         try:
                             t_args = json.loads(tc_data["args"] or "{}")
-                        except:
+                        except (json.JSONDecodeError, TypeError):
                             t_args = {}
                         
                         tool_info.markdown(f"<span class='gold-badge'>🔧 Tool: {t_name} — {str(t_args)[:80]}</span>", unsafe_allow_html=True)
