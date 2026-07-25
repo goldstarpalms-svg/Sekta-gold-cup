@@ -356,6 +356,21 @@ def detect_and_run_tool(user_msg, lower):
     if any(k in lower for k in ["make a chart", "create a chart", "bar chart", "pie chart", "plot this"]):
         return "📊 Chart", "Provide data as JSON like: `{\"Jan\": 100, \"Feb\": 150, \"Mar\": 200}` and I'll generate a chart."
 
+    # Image generation triggers
+    if any(k in lower for k in ["generate image", "create image", "make image", "image of", "generate a", "create a", "draw", "picture of", "photo of", "logo", "illustration"]):
+        # Extract the prompt (remove trigger words)
+        prompt_text = user_msg
+        for t in ["generate image of", "generate image", "create image of", "create image", "make image of", "make image", "generate a", "create a", "draw a", "draw", "picture of", "photo of", "logo for", "logo", "illustration of", "illustration"]:
+            if t in lower:
+                idx = lower.index(t)
+                prompt_text = user_msg[idx + len(t):].strip()
+                break
+        if prompt_text and len(prompt_text) > 3:
+            url, revised = tool_generate_image(prompt_text)
+            if url:
+                # Return URL directly — will be displayed as image
+                return "🖼️ Image Gen", url
+
     return None, None
 
 def safe_avatar(icon):
