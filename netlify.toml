@@ -1,0 +1,20 @@
+[build]
+  base = "frontend/"
+  command = "npm install && npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Redirect API calls to Render backend (update URL after Render deploy)
+[[redirects]]
+  from = "/api/*"
+  to = "https://sekta-gold-cup.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+# SPA fallback
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
