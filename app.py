@@ -1,869 +1,518 @@
 from __future__ import annotations
 
+import io
+import json
 import os
+import textwrap
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import streamlit as st
 
 try:
     from dotenv import load_dotenv
 
     load_dotenv()
 except Exception:
-    # python-dotenv is optional; environment variables and Streamlit secrets still work.
     pass
 
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-import streamlit as st
-
-from src.setka_core import (
-    build_context,
-    comparison_table,
-    format_number,
-    format_percent,
-    get_head_to_head,
-    load_raw_data,
-    predict_match,
-)
-
 try:
-    from src.ml_pipeline import (
-        load_model_bundle,
-        metrics_table,
-        predict_with_bundle,
-        save_model_bundle,
-        train_model_bundle,
-    )
+    import httpx
+except Exception:  # pragma: no cover
+    httpx = None
 
-    ML_IMPORT_ERROR = None
-except Exception as exc:  # pragma: no cover - shown inside the UI
-    ML_IMPORT_ERROR = exc
 
-try:
-    from src.odds_api import (
-        OddsAPIError,
-        add_implied_probabilities,
-        fetch_odds,
-        list_sports,
-        normalize_odds_events,
-    )
-    from src.setka_live import OFFICIAL_SETKA_URL, fetch_official_site_status, status_as_dict
-    from src.source_registry import categories as source_categories
-    from src.source_registry import registry_dataframe, summary_by_category
+APP_NAME = "SEKTA GOLD AI"
+DEFAULT_SYSTEM_PROMPT = """
+You are SEKTA GOLD AI, a fast, practical, and friendly AI chatbot.
+Help with writing, coding, research, planning, analysis, business ideas, and everyday questions.
+Be clear, useful, and honest. If uploaded files or web results are provided, use them as context.
+If you are unsure, say so and suggest the next best step.
+""".strip()
 
-    ODDS_IMPORT_ERROR = None
-except Exception as exc:  # pragma: no cover - shown inside the UI
-    ODDS_IMPORT_ERROR = exc
+PROVIDERS: dict[str, dict[str, str]] = {
+    "groq": {
+        "label": "Groq",
+        "secret": "GROQ_API_KEY",
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": "llama-3.3-70b-versatile",
+    },
+    "openai": {
+        "label": "OpenAI",
+        "secret": "OPENAI_API_KEY",
+        "base_url": "",
+        "model": "gpt-4o-mini",
+    },
+    "gemini": {
+        "label": "Gemini",
+        "secret": "GEMINI_API_KEY",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "model": "gemini-1.5-flash",
+    },
+}
 
 
 st.set_page_config(
-    page_title="Setka Predictor",
-    page_icon="🏓",
+    page_title="SEKTA GOLD AI Chatbot",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-
-CUSTOM_CSS = """
+st.markdown(
+    """
 <style>
-.block-container { padding-top: 1.6rem; padding-bottom: 2rem; }
-[data-testid="stMetricValue"] { font-size: 1.8rem; }
-.small-muted { color: #94A3B8; font-size: 0.92rem; }
-.card {
-    border: 1px solid rgba(148, 163, 184, 0.25);
-    border-radius: 16px;
-    padding: 1rem 1.15rem;
-    background: rgba(15, 23, 42, 0.48);
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif; }
+.stApp { background: radial-gradient(circle at top left, #191307 0, #08080A 38%, #050506 100%); color: #F5F5F5; }
+[data-testid="stSidebar"] { background: #09090B; border-right: 1px solid rgba(255,199,0,0.20); }
+[data-testid="stHeader"] { background: rgba(8,8,10,0.78); backdrop-filter: blur(14px); }
+h1, h2, h3 { color: #FFFFFF; letter-spacing: -0.03em; }
+a { color: #FFC700 !important; }
+code, pre { font-family: 'JetBrains Mono', monospace !important; }
+.gold { color: #FFC700; font-weight: 800; }
+.hero {
+    border: 1px solid rgba(255,199,0,0.22);
+    border-radius: 22px;
+    padding: 22px 24px;
+    background: linear-gradient(135deg, rgba(255,199,0,0.12), rgba(20,20,22,0.85));
+    box-shadow: 0 18px 70px rgba(0,0,0,0.28);
 }
-.good { color: #22C55E; font-weight: 700; }
-.warn { color: #F59E0B; font-weight: 700; }
-.bad { color: #EF4444; font-weight: 700; }
+.subtle { color: #B8B8B8; }
+.pill {
+    display: inline-block;
+    padding: 6px 10px;
+    border: 1px solid rgba(255,199,0,0.26);
+    border-radius: 999px;
+    color: #FFC700;
+    background: rgba(255,199,0,0.08);
+    font-size: 12px;
+    font-weight: 700;
+    margin-right: 6px;
+}
+[data-testid="stChatMessage"] {
+    border-radius: 16px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(18,18,20,0.62);
+}
+.stButton > button { border-radius: 12px; font-weight: 700; }
+#MainMenu { visibility: hidden; }
+footer { visibility: hidden; }
 </style>
-"""
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 
-@st.cache_data(show_spinner="Loading and preparing Setka data...")
-def load_app_context() -> dict:
-    matches, leaderboard = load_raw_data()
-    return build_context(matches, leaderboard)
+def now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-ctx = load_app_context()
-matches = ctx["matches"]
-player_log = ctx["player_log"]
-player_stats = ctx["player_stats"]
-global_stats = ctx["global_stats"]
-
-players_by_elo = player_stats.sort_values(["elo", "matches"], ascending=[False, False])[
-    "player"
-].tolist()
-players_alpha = sorted(player_stats["player"].dropna().unique().tolist())
-MODEL_BUNDLE_PATH = Path("models/setka_ml_bundle.joblib")
+def load_secret(name: str, default: str = "") -> str:
+    """Read from Streamlit secrets first, then environment variables."""
+    try:
+        value = st.secrets.get(name, "")
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    return os.getenv(name, default) or default
 
 
-@st.cache_resource(show_spinner="Training ML models. This can take a few minutes on the full dataset...")
-def train_ml_cached(algorithm: str, max_training_rows: int | None):
-    return train_model_bundle(
-        matches,
-        algorithm=algorithm,
-        max_training_rows=max_training_rows,
+def mask_key(value: str) -> str:
+    if not value:
+        return "not set"
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}…{value[-4:]}"
+
+
+def provider_key(provider: str, override: str = "") -> str:
+    if override:
+        return override.strip()
+    cfg = PROVIDERS[provider]
+    return load_secret(cfg["secret"])
+
+
+def available_provider_options() -> list[str]:
+    options = ["demo"]
+    for key, cfg in PROVIDERS.items():
+        if load_secret(cfg["secret"]):
+            options.append(key)
+    # Always show providers so users can paste a key at runtime.
+    for key in PROVIDERS:
+        if key not in options:
+            options.append(key)
+    return options
+
+
+def provider_label(provider: str) -> str:
+    if provider == "demo":
+        return "Demo mode (no API key)"
+    cfg = PROVIDERS[provider]
+    configured = "configured" if load_secret(cfg["secret"]) else "add key"
+    return f"{cfg['label']} ({configured})"
+
+
+def transcript_as_markdown(messages: list[dict[str, str]]) -> str:
+    parts = [f"# {APP_NAME} Chat Transcript", "", f"Exported: {now_utc()}", ""]
+    for msg in messages:
+        role = "Assistant" if msg["role"] == "assistant" else "User"
+        parts.extend([f"## {role}", "", msg["content"], ""])
+    return "\n".join(parts)
+
+
+def trim_text(text: str, limit: int = 12000) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n\n[Truncated to {limit:,} characters]"
+
+
+def extract_uploaded_file(uploaded_file: Any) -> str:
+    """Extract readable text/table preview from a Streamlit UploadedFile."""
+    name = uploaded_file.name
+    suffix = Path(name).suffix.lower()
+    data = uploaded_file.getvalue()
+
+    try:
+        if suffix in {".txt", ".md", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".json", ".toml", ".yaml", ".yml", ".log", ".csv"}:
+            if suffix == ".csv":
+                try:
+                    df = pd.read_csv(io.BytesIO(data))
+                    return f"File: {name}\nCSV shape: {df.shape}\nPreview:\n{df.head(25).to_markdown(index=False)}"
+                except Exception:
+                    pass
+            return f"File: {name}\n\n{data.decode('utf-8', errors='replace')}"
+
+        if suffix in {".xlsx", ".xls"}:
+            excel = pd.ExcelFile(io.BytesIO(data))
+            chunks = [f"File: {name}", f"Sheets: {', '.join(excel.sheet_names)}"]
+            for sheet in excel.sheet_names[:3]:
+                df = pd.read_excel(excel, sheet_name=sheet, nrows=25)
+                chunks.append(f"\nSheet: {sheet}\nShape preview: {df.shape}\n{df.to_markdown(index=False)}")
+            return "\n".join(chunks)
+
+        if suffix == ".pdf":
+            from PyPDF2 import PdfReader
+
+            reader = PdfReader(io.BytesIO(data))
+            pages = []
+            for i, page in enumerate(reader.pages[:12], start=1):
+                pages.append(f"\n--- Page {i} ---\n{page.extract_text() or ''}")
+            return f"File: {name}\nPDF pages read: {min(len(reader.pages), 12)} of {len(reader.pages)}\n" + "\n".join(pages)
+
+        if suffix == ".docx":
+            import docx
+
+            document = docx.Document(io.BytesIO(data))
+            text = "\n".join(p.text for p in document.paragraphs if p.text.strip())
+            return f"File: {name}\n\n{text}"
+
+        return f"File: {name}\nType: {suffix or 'unknown'}\nSize: {len(data):,} bytes\nI can see the file metadata, but this file type is not text-readable in the current app."
+    except Exception as exc:
+        return f"File: {name}\nCould not extract content: {exc}"
+
+
+def build_file_context(files: list[Any]) -> str:
+    if not files:
+        return ""
+    extracted = []
+    for file in files[:5]:
+        extracted.append(trim_text(extract_uploaded_file(file), 8000))
+    return "\n\n".join(extracted)
+
+
+def tavily_search(query: str, api_key: str) -> list[dict[str, str]]:
+    try:
+        from tavily import TavilyClient
+
+        client = TavilyClient(api_key=api_key)
+        response = client.search(query=query, search_depth="basic", max_results=5)
+        return [
+            {
+                "title": item.get("title", "Untitled"),
+                "url": item.get("url", ""),
+                "content": item.get("content", ""),
+            }
+            for item in response.get("results", [])
+        ]
+    except Exception:
+        return []
+
+
+def lightweight_web_search(query: str) -> list[dict[str, str]]:
+    if httpx is None:
+        return []
+    results: list[dict[str, str]] = []
+
+    # DuckDuckGo Instant Answer API is lightweight and keyless.
+    try:
+        r = httpx.get(
+            "https://api.duckduckgo.com/",
+            params={"q": query, "format": "json", "no_html": 1, "skip_disambig": 1},
+            timeout=10,
+        )
+        data = r.json()
+        if data.get("AbstractText"):
+            results.append(
+                {
+                    "title": data.get("Heading") or "DuckDuckGo result",
+                    "url": data.get("AbstractURL") or "https://duckduckgo.com/",
+                    "content": data.get("AbstractText", ""),
+                }
+            )
+        for topic in data.get("RelatedTopics", [])[:4]:
+            if isinstance(topic, dict) and topic.get("Text"):
+                results.append(
+                    {
+                        "title": topic.get("Text", "")[:80],
+                        "url": topic.get("FirstURL", ""),
+                        "content": topic.get("Text", ""),
+                    }
+                )
+    except Exception:
+        pass
+
+    # Wikipedia summary fallback.
+    if len(results) < 2:
+        try:
+            title = query.strip().replace(" ", "_")[:120]
+            r = httpx.get(f"https://en.wikipedia.org/api/rest_v1/page/summary/{title}", timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("extract"):
+                    results.append(
+                        {
+                            "title": data.get("title", "Wikipedia"),
+                            "url": data.get("content_urls", {}).get("desktop", {}).get("page", ""),
+                            "content": data.get("extract", ""),
+                        }
+                    )
+        except Exception:
+            pass
+
+    return results[:5]
+
+
+def web_context(query: str) -> tuple[str, list[dict[str, str]]]:
+    tavily_key = load_secret("TAVILY_API_KEY")
+    results = tavily_search(query, tavily_key) if tavily_key else []
+    if not results:
+        results = lightweight_web_search(query)
+    if not results:
+        return "", []
+
+    lines = ["Web search results. Use these only when relevant and cite the URLs:"]
+    for i, item in enumerate(results, start=1):
+        lines.append(
+            f"[{i}] {item.get('title', 'Untitled')}\nURL: {item.get('url', '')}\nSnippet: {item.get('content', '')}"
+        )
+    return "\n\n".join(lines), results
+
+
+def demo_response(prompt: str, file_context: str = "", search_context: str = "") -> str:
+    """A no-key fallback so the deployed app is still usable for setup/testing."""
+    pieces = [
+        "I’m running in **Demo mode**, so I can’t call a live AI model yet.",
+        "To unlock the real chatbot, add `GROQ_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` in Streamlit Secrets.",
+        "",
+        "I received your message:",
+        f"> {prompt}",
+    ]
+    if file_context:
+        pieces.extend(["", "I also detected uploaded file context. Once an API key is added, I can analyze it in detail."])
+    if search_context:
+        pieces.extend(["", "Web context was collected. Once an API key is added, I can synthesize it into a sourced answer."])
+    pieces.extend(
+        [
+            "",
+            "Quick setup:",
+            "```toml",
+            'GROQ_API_KEY = "your_groq_key"',
+            '# or OPENAI_API_KEY = "your_openai_key"',
+            '# or GEMINI_API_KEY = "your_gemini_key"',
+            "```",
+        ]
     )
+    return "\n".join(pieces)
 
+
+def call_chat_model(
+    provider: str,
+    api_key: str,
+    model: str,
+    messages: list[dict[str, str]],
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    try:
+        from openai import OpenAI
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("The OpenAI Python package is not installed. Run `pip install -r requirements.txt`.") from exc
+
+    cfg = PROVIDERS[provider]
+    kwargs: dict[str, Any] = {"api_key": api_key}
+    if cfg["base_url"]:
+        kwargs["base_url"] = cfg["base_url"]
+    client = OpenAI(**kwargs)
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return response.choices[0].message.content or ""
+
+
+def ensure_state() -> None:
+    if "messages" not in st.session_state:
+        st.session_state.messages = [
+            {
+                "role": "assistant",
+                "content": "Hello — I’m **SEKTA GOLD AI**. Ask me anything, or upload a file for me to analyze.",
+            }
+        ]
+
+
+ensure_state()
 
 with st.sidebar:
-    st.title("🏓 Setka Predictor")
-    st.caption("Prediction dashboard from uploaded Setka match history + Elo leaderboard.")
-    st.divider()
+    st.markdown("# 🤖 SEKTA GOLD AI")
+    st.caption("Streamlit AI chatbot")
 
-    page = st.radio(
-        "Go to",
-        [
-            "Match Predictor",
-            "ML Lab",
-            "Live Odds",
-            "Data Sources",
-            "Leaderboard",
-            "Player Explorer",
-            "Head-to-Head",
-            "Data Health",
-        ],
+    provider_options = available_provider_options()
+    provider = st.selectbox(
+        "AI provider",
+        provider_options,
+        index=0 if not any(load_secret(cfg["secret"]) for cfg in PROVIDERS.values()) else 1,
+        format_func=provider_label,
     )
 
-    st.divider()
-    st.metric("Matches", f"{global_stats['match_count']:,}")
-    st.metric("Players", f"{global_stats['player_count']:,}")
-    st.caption(
-        f"Date range: {global_stats['date_min'].date()} → {global_stats['date_max'].date()}"
-    )
-    st.caption(
-        "Rule model: Elo + form + H2H. ML Lab: scikit-learn/XGBoost training."
-    )
+    pasted_key = ""
+    model = ""
+    if provider != "demo":
+        cfg = PROVIDERS[provider]
+        configured_key = load_secret(cfg["secret"])
+        st.caption(f"Secret `{cfg['secret']}`: {mask_key(configured_key)}")
+        pasted_key = st.text_input(
+            "Temporary API key override",
+            type="password",
+            help="Optional. Use this for testing; it is not saved to the repo.",
+        )
+        model = st.text_input("Model", value=cfg["model"])
+    else:
+        st.info("Demo mode works without secrets, but real AI responses need an API key.")
 
+    temperature = st.slider("Creativity", 0.0, 1.2, 0.7, 0.05)
+    max_tokens = st.slider("Max response tokens", 256, 4096, 1400, 128)
+    enable_web = st.toggle("🔍 Add web context", value=False)
 
-def probability_bar(pred: dict) -> go.Figure:
-    fig = go.Figure(
-        data=[
-            go.Bar(
-                y=[pred["player_a"], pred["player_b"]],
-                x=[pred["player_a_win_probability"], pred["player_b_win_probability"]],
-                orientation="h",
-                marker_color=["#22C55E", "#F97316"],
-                text=[
-                    format_percent(pred["player_a_win_probability"]),
-                    format_percent(pred["player_b_win_probability"]),
-                ],
-                textposition="auto",
-                hovertemplate="%{y}: %{x:.1%}<extra></extra>",
-            )
-        ]
-    )
-    fig.update_layout(
-        title="Win probability",
-        xaxis=dict(range=[0, 1], tickformat=".0%"),
-        yaxis=dict(autorange="reversed"),
-        height=260,
-        margin=dict(l=10, r=10, t=50, b=10),
-    )
-    return fig
+    with st.expander("System instructions"):
+        system_prompt = st.text_area("Assistant behavior", value=DEFAULT_SYSTEM_PROMPT, height=180)
 
-
-def over_under_bar(label: str, over_prob: float, under_prob: float) -> go.Figure:
-    fig = go.Figure(
-        data=[
-            go.Bar(
-                x=["Over", "Under"],
-                y=[over_prob, under_prob],
-                marker_color=["#38BDF8", "#A78BFA"],
-                text=[format_percent(over_prob), format_percent(under_prob)],
-                textposition="auto",
-                hovertemplate="%{x}: %{y:.1%}<extra></extra>",
-            )
-        ]
-    )
-    fig.update_layout(
-        title=label,
-        yaxis=dict(range=[0, 1], tickformat=".0%"),
-        height=260,
-        margin=dict(l=10, r=10, t=50, b=10),
-    )
-    return fig
-
-
-def h2h_display_table(df: pd.DataFrame, limit: int = 25) -> pd.DataFrame:
-    cols = [
-        "date_time",
-        "competition",
-        "player1",
-        "player2",
-        "winner",
-        "set_scores",
-        "total_points",
-        "first_set_total",
-        "sets_played",
-    ]
-    out = df.loc[:, [c for c in cols if c in df.columns]].head(limit).copy()
-    if "date_time" in out:
-        out["date_time"] = pd.to_datetime(out["date_time"]).dt.strftime("%Y-%m-%d %H:%M")
-    return out
-
-
-def player_latest_table(df: pd.DataFrame, limit: int = 25) -> pd.DataFrame:
-    cols = [
-        "date_time",
-        "competition",
-        "opponent",
-        "won",
-        "set_scores",
-        "points_for",
-        "points_against",
-        "total_points",
-        "first_set_total",
-    ]
-    out = df.loc[:, [c for c in cols if c in df.columns]].sort_values(
-        "date_time", ascending=False
-    ).head(limit).copy()
-    out["result"] = out["won"].map({True: "Win", False: "Loss"})
-    out = out.drop(columns=["won"])
-    out["date_time"] = pd.to_datetime(out["date_time"]).dt.strftime("%Y-%m-%d %H:%M")
-    return out
-
-
-if page == "Match Predictor":
-    st.title("🏓 Match Predictor")
-    st.markdown(
-        "Estimate match winner, expected total points, and **first set Over/Under 18.5** from the Setka history."
+    uploaded_files = st.file_uploader(
+        "Upload files for context",
+        type=["txt", "md", "csv", "xlsx", "xls", "pdf", "docx", "py", "js", "ts", "json", "html", "css", "log"],
+        accept_multiple_files=True,
     )
 
-    c1, c2, c3, c4 = st.columns([2.2, 2.2, 1.25, 1.25])
+    c1, c2 = st.columns(2)
     with c1:
-        player_a = st.selectbox("Player A", players_by_elo, index=0)
+        if st.button("New chat", use_container_width=True):
+            st.session_state.messages = [
+                {"role": "assistant", "content": "New chat started. What would you like to do?"}
+            ]
+            st.rerun()
     with c2:
-        default_b = 1 if len(players_by_elo) > 1 else 0
-        player_b = st.selectbox("Player B", players_by_elo, index=default_b)
-    with c3:
-        first_set_line = st.number_input(
-            "1st set line", min_value=10.5, max_value=35.5, value=18.5, step=0.5
-        )
-    with c4:
-        total_points_line = st.number_input(
-            "Total points line", min_value=30.5, max_value=140.5, value=75.5, step=0.5
-        )
-
-    if player_a == player_b:
-        st.error("Choose two different players.")
-        st.stop()
-
-    pred = predict_match(
-        player_a,
-        player_b,
-        player_stats,
-        matches,
-        global_stats,
-        first_set_line=first_set_line,
-        total_points_line=total_points_line,
-    )
-
-    st.divider()
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Predicted winner", pred["predicted_winner"])
-    m2.metric(f"{player_a} win chance", format_percent(pred["player_a_win_probability"]))
-    m3.metric(
-        f"1st set Over {first_set_line}",
-        format_percent(pred["first_set_over_probability"]),
-    )
-    m4.metric("Confidence", pred["confidence"], help="Based on player sample size, Elo availability, recent data, and H2H sample.")
-
-    r1, r2 = st.columns([1.05, 1])
-    with r1:
-        st.plotly_chart(probability_bar(pred), use_container_width=True)
-    with r2:
-        st.plotly_chart(
-            over_under_bar(
-                f"1st set O/U {first_set_line}",
-                pred["first_set_over_probability"],
-                pred["first_set_under_probability"],
-            ),
+        st.download_button(
+            "Export",
+            data=transcript_as_markdown(st.session_state.messages),
+            file_name="sekta-gold-ai-chat.md",
+            mime="text/markdown",
             use_container_width=True,
         )
 
-    line_cols = st.columns(4)
-    line_cols[0].metric("Expected 1st-set points", format_number(pred["expected_first_set_points"], 2))
-    line_cols[1].metric("Expected total points", format_number(pred["expected_total_points"], 2))
-    line_cols[2].metric(
-        f"Total Over {total_points_line}",
-        format_percent(pred["total_points_over_probability"]),
-    )
-    line_cols[3].metric(
-        f"Total Under {total_points_line}",
-        format_percent(pred["total_points_under_probability"]),
-    )
+    st.divider()
+    st.caption("Streamlit secrets supported: `GROQ_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `TAVILY_API_KEY`.")
 
-    with st.expander("Why this prediction?", expanded=True):
-        d1, d2, d3, d4 = st.columns(4)
-        d1.metric("Elo difference", f"{pred['elo_diff']:+.1f}")
-        d2.metric("Elo-only chance", format_percent(pred["elo_probability"]))
-        d3.metric("H2H matches", f"{pred['h2h_matches']}")
-        d4.metric(
-            f"{player_a} H2H wins",
-            f"{pred['h2h_player_a_wins']} / {pred['h2h_matches']}",
+st.markdown(
+    """
+<div class="hero">
+  <span class="pill">AI CHATBOT</span><span class="pill">STREAMLIT READY</span><span class="pill">FILES + WEB</span>
+  <h1><span class="gold">SEKTA GOLD</span> AI Chatbot</h1>
+  <p class="subtle">Ask questions, write content, debug code, analyze uploaded files, or add web context for current topics.</p>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+if uploaded_files:
+    st.caption("Attached for the next message: " + ", ".join(file.name for file in uploaded_files[:5]))
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+prompt = st.chat_input("Message SEKTA GOLD AI…")
+
+if prompt:
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    file_context = build_file_context(uploaded_files or [])
+    search_context = ""
+    sources: list[dict[str, str]] = []
+    if enable_web:
+        with st.status("Searching the web…", expanded=False):
+            search_context, sources = web_context(prompt)
+
+    context_blocks = []
+    if file_context:
+        context_blocks.append("Uploaded file context:\n" + trim_text(file_context, 18000))
+    if search_context:
+        context_blocks.append(trim_text(search_context, 10000))
+
+    user_content = prompt
+    if context_blocks:
+        user_content = (
+            "Use the following context when relevant. If using web results, cite the URLs.\n\n"
+            + "\n\n".join(context_blocks)
+            + "\n\nUser question:\n"
+            + prompt
         )
-        st.dataframe(comparison_table(player_stats, player_a, player_b), use_container_width=True)
-        st.caption(
-            "This is an analytical estimate, not a guarantee or financial advice. Use your own judgement."
-        )
 
-    st.subheader("Recent head-to-head matches")
-    if pred["h2h_table"].empty:
-        st.info("No direct head-to-head matches found in the uploaded history.")
-    else:
-        st.dataframe(h2h_display_table(pred["h2h_table"]), use_container_width=True)
+    model_messages = [{"role": "system", "content": system_prompt}]
+    # Keep recent history compact for Streamlit/community model limits.
+    model_messages.extend(st.session_state.messages[-12:-1])
+    model_messages.append({"role": "user", "content": user_content})
 
-
-elif page == "ML Lab":
-    st.title("🤖 ML Lab — scikit-learn / XGBoost")
-    st.markdown(
-        "Train machine-learning models for match winner, match total points, and first-set Over/Under 18.5."
-    )
-
-    if ML_IMPORT_ERROR is not None:
-        st.error(f"ML dependencies could not be imported: {ML_IMPORT_ERROR}")
-        st.info("Run `pip install -r requirements.txt` and restart the app.")
-        st.stop()
-
-    st.info(
-        "The ML pipeline uses chronological pre-match features to reduce future leakage: rolling Elo, player form, point totals, first-set trends, and H2H history."
-    )
-
-    c1, c2, c3 = st.columns([1.4, 1.4, 1])
-    with c1:
-        algorithm = st.selectbox(
-            "Algorithm",
-            ["auto", "xgboost", "sklearn"],
-            help="auto uses XGBoost when installed, otherwise scikit-learn HistGradientBoosting.",
-        )
-    with c2:
-        row_cap_label = st.selectbox(
-            "Training size",
-            ["Quick: latest 50k rows", "Balanced: latest 120k rows", "Full: all rows"],
-            index=1,
-            help="Rows are orientation rows; each match creates two rows. Full data is most complete but slower.",
-        )
-        row_cap_map = {
-            "Quick: latest 50k rows": 50_000,
-            "Balanced: latest 120k rows": 120_000,
-            "Full: all rows": None,
-        }
-        max_training_rows = row_cap_map[row_cap_label]
-    with c3:
-        st.metric("Available ML rows", f"{len(matches) * 2:,}")
-
-    b1, b2, b3 = st.columns([1, 1, 2])
-    with b1:
-        train_clicked = st.button("Train model", type="primary")
-    with b2:
-        load_clicked = st.button("Load saved model")
-    with b3:
-        if MODEL_BUNDLE_PATH.exists():
-            st.caption(f"Saved bundle found: `{MODEL_BUNDLE_PATH}`")
-        else:
-            st.caption("No saved model bundle yet. Train one here or run `python scripts/train_models.py`.")
-
-    if load_clicked:
-        if MODEL_BUNDLE_PATH.exists():
-            st.session_state["ml_bundle"] = load_model_bundle(MODEL_BUNDLE_PATH)
-            st.success("Loaded saved ML bundle.")
-        else:
-            st.warning("No saved model bundle found yet.")
-
-    if train_clicked:
+    with st.chat_message("assistant"):
         try:
-            st.session_state["ml_bundle"] = train_ml_cached(algorithm, max_training_rows)
-            st.success("ML training complete.")
-        except Exception as exc:
-            st.exception(exc)
-            st.stop()
-
-    bundle = st.session_state.get("ml_bundle")
-    if not bundle:
-        st.stop()
-
-    st.divider()
-    meta_cols = st.columns(5)
-    meta_cols[0].metric("Algorithm", bundle["algorithm"])
-    meta_cols[1].metric("Rows used", f"{bundle['rows_used_for_training']:,}")
-    meta_cols[2].metric("Train rows", f"{bundle['train_rows']:,}")
-    meta_cols[3].metric("Test rows", f"{bundle['test_rows']:,}")
-    meta_cols[4].metric("Models", "4")
-
-    st.subheader("Holdout metrics")
-    st.dataframe(metrics_table(bundle), use_container_width=True)
-
-    with st.expander("Save / reuse this model", expanded=False):
-        st.write("Save the trained bundle locally so the app can load it next time.")
-        if st.button("Save model bundle to models/setka_ml_bundle.joblib"):
-            saved_path = save_model_bundle(bundle, MODEL_BUNDLE_PATH)
-            st.success(f"Saved: {saved_path}")
-        st.code("python scripts/train_models.py --algorithm auto --output models/setka_ml_bundle.joblib", language="bash")
-
-    st.subheader("ML prediction")
-    p1, p2, p3, p4 = st.columns([2.2, 2.2, 1.25, 1.25])
-    with p1:
-        ml_player_a = st.selectbox("Player A", players_by_elo, index=0, key="ml_a")
-    with p2:
-        ml_player_b = st.selectbox("Player B", players_by_elo, index=1 if len(players_by_elo) > 1 else 0, key="ml_b")
-    with p3:
-        ml_first_line = st.number_input("1st set line", min_value=10.5, max_value=35.5, value=18.5, step=0.5, key="ml_first_line")
-    with p4:
-        ml_total_line = st.number_input("Total points line", min_value=30.5, max_value=140.5, value=75.5, step=0.5, key="ml_total_line")
-
-    if ml_player_a == ml_player_b:
-        st.error("Choose two different players.")
-        st.stop()
-
-    ml_pred = predict_with_bundle(
-        bundle,
-        ml_player_a,
-        ml_player_b,
-        first_set_line=ml_first_line,
-        total_points_line=ml_total_line,
-    )
-    rule_pred = predict_match(
-        ml_player_a,
-        ml_player_b,
-        player_stats,
-        matches,
-        global_stats,
-        first_set_line=ml_first_line,
-        total_points_line=ml_total_line,
-    )
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("ML predicted winner", ml_pred["predicted_winner"])
-    m2.metric(f"{ml_player_a} ML win chance", format_percent(ml_pred["player_a_win_probability"]))
-    m3.metric(f"ML 1st set Over {ml_first_line}", format_percent(ml_pred["first_set_over_probability"]))
-    m4.metric("ML expected total", format_number(ml_pred["expected_total_points"], 2))
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.plotly_chart(probability_bar(ml_pred), use_container_width=True)
-    with c2:
-        st.plotly_chart(
-            over_under_bar(
-                f"ML first set O/U {ml_first_line}",
-                ml_pred["first_set_over_probability"],
-                ml_pred["first_set_under_probability"],
-            ),
-            use_container_width=True,
-        )
-
-    compare_df = pd.DataFrame(
-        [
-            {
-                "model": "ML",
-                "predicted_winner": ml_pred["predicted_winner"],
-                f"{ml_player_a}_win_probability": ml_pred["player_a_win_probability"],
-                "expected_total_points": ml_pred["expected_total_points"],
-                "total_over_probability": ml_pred["total_points_over_probability"],
-                "expected_first_set_points": ml_pred["expected_first_set_points"],
-                "first_set_over_probability": ml_pred["first_set_over_probability"],
-            },
-            {
-                "model": "Rule blend",
-                "predicted_winner": rule_pred["predicted_winner"],
-                f"{ml_player_a}_win_probability": rule_pred["player_a_win_probability"],
-                "expected_total_points": rule_pred["expected_total_points"],
-                "total_over_probability": rule_pred["total_points_over_probability"],
-                "expected_first_set_points": rule_pred["expected_first_set_points"],
-                "first_set_over_probability": rule_pred["first_set_over_probability"],
-            },
-        ]
-    )
-    st.subheader("ML vs rule-blend comparison")
-    st.dataframe(compare_df, use_container_width=True)
-    st.caption("ML estimates are based on historical patterns only. They are not betting advice or guaranteed outcomes.")
-
-
-elif page == "Data Sources":
-    st.title("🧭 Data Sources & Research Registry")
-    st.markdown(
-        "A structured registry of the live-score, odds, table-tennis, ML, training, GitHub, and research resources you listed."
-    )
-
-    if ODDS_IMPORT_ERROR is not None:
-        st.error(f"Source registry dependencies could not be imported: {ODDS_IMPORT_ERROR}")
-        st.stop()
-
-    st.warning(
-        "Compliance note: the app does not blindly scrape websites. Use official APIs, licensed feeds, permitted exports, or manual imports."
-    )
-
-    s1, s2 = st.columns([1, 2])
-    with s1:
-        selected_category = st.selectbox("Category", ["All"] + source_categories())
-    with s2:
-        st.caption(
-            "Status tells you whether the source is already wired into the app, available as a scaffold, or kept as a research/manual-reference link."
-        )
-
-    st.subheader("Summary")
-    st.dataframe(summary_by_category(), use_container_width=True)
-
-    st.subheader("Sources")
-    source_df = registry_dataframe(selected_category)
-    st.dataframe(
-        source_df,
-        use_container_width=True,
-        height=620,
-        column_config={
-            "url": st.column_config.LinkColumn("url"),
-        },
-    )
-
-    with st.expander("Secrets for API integrations", expanded=False):
-        st.code(
-            """THE_ODDS_API_KEY="..."
-PINNACLE_USERNAME="..."
-PINNACLE_PASSWORD="..."
-BETFAIR_APP_KEY="..."
-BETFAIR_SESSION_TOKEN="...""",
-            language="bash",
-        )
-
-    with st.expander("Recommended next build steps", expanded=False):
-        st.markdown(
-            """
-1. Add your GitHub repo URL so the project can be pushed.
-2. Add The Odds API key and discover the exact table-tennis sport key available to your account.
-3. If you have Pinnacle/Betfair access, wire the approved endpoints into `src/external_clients.py`.
-4. Add a canonical player-name mapping table for matching odds/live-score names to Setka CSV names.
-5. Backtest predictions against historical odds before relying on any edge calculation.
-            """
-        )
-
-
-elif page == "Leaderboard":
-    st.title("🏆 Leaderboard")
-    st.markdown("Search and rank players by Elo, matches, win rate, form, and point-total profile.")
-
-    fc1, fc2, fc3 = st.columns([2, 1, 1])
-    with fc1:
-        search = st.text_input("Search player", placeholder="Type part of a player name...")
-    with fc2:
-        min_matches = st.number_input("Minimum history matches", min_value=0, value=0, step=10)
-    with fc3:
-        sort_by = st.selectbox(
-            "Sort by",
-            ["elo", "matches", "win_rate", "recent_win_rate", "avg_total_points", "first_set_over_18_5_rate"],
-        )
-
-    df = player_stats.copy()
-    if search:
-        df = df[df["player"].str.contains(search, case=False, na=False)]
-    df = df[df["matches"] >= min_matches]
-    df = df.sort_values(sort_by, ascending=False)
-
-    show_cols = [
-        "player",
-        "elo",
-        "matches",
-        "wins",
-        "losses",
-        "win_rate",
-        "recent_win_rate",
-        "avg_total_points",
-        "avg_first_set_total",
-        "first_set_over_18_5_rate",
-        "last_played",
-    ]
-    st.dataframe(df[show_cols], use_container_width=True, height=600)
-    st.download_button(
-        "Download filtered leaderboard CSV",
-        data=df[show_cols].to_csv(index=False).encode("utf-8"),
-        file_name="setka_filtered_leaderboard.csv",
-        mime="text/csv",
-    )
-
-
-elif page == "Player Explorer":
-    st.title("🔎 Player Explorer")
-    player = st.selectbox("Choose player", players_alpha)
-    row = player_stats.loc[player_stats["player"] == player].iloc[0]
-    log = player_log.loc[player_log["player"] == player].copy().sort_values("date_time")
-
-    st.subheader(player)
-    p1, p2, p3, p4, p5 = st.columns(5)
-    p1.metric("Elo", f"{row['elo']:.1f}")
-    p2.metric("Matches", f"{int(row['matches']):,}")
-    p3.metric("Win rate", format_percent(row["win_rate"]))
-    p4.metric("Recent win rate", format_percent(row["recent_win_rate"]))
-    p5.metric("1st set O18.5 rate", format_percent(row["first_set_over_18_5_rate"]))
-
-    if log.empty:
-        st.info("No match history for this player in the uploaded match file.")
-        st.stop()
-
-    chart_df = log[["date_time", "won", "total_points", "first_set_total", "point_diff"]].copy()
-    chart_df["rolling_win_rate_20"] = chart_df["won"].rolling(20, min_periods=3).mean()
-    chart_df["match_number"] = range(1, len(chart_df) + 1)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        fig = px.line(
-            chart_df,
-            x="date_time",
-            y="rolling_win_rate_20",
-            title="Rolling win rate / last 20 matches",
-            labels={"rolling_win_rate_20": "Rolling win rate", "date_time": "Date"},
-        )
-        fig.update_yaxes(tickformat=".0%", range=[0, 1])
-        st.plotly_chart(fig, use_container_width=True)
-    with c2:
-        fig = px.histogram(
-            chart_df,
-            x="total_points",
-            nbins=35,
-            title="Match total points distribution",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    c3, c4 = st.columns(2)
-    with c3:
-        fig = px.histogram(
-            chart_df,
-            x="first_set_total",
-            nbins=25,
-            title="First-set points distribution",
-        )
-        fig.add_vline(x=18.5, line_dash="dash", line_color="#F97316")
-        st.plotly_chart(fig, use_container_width=True)
-    with c4:
-        recent_opponents = (
-            log.groupby("opponent")
-            .agg(matches=("won", "size"), wins=("won", "sum"), avg_total_points=("total_points", "mean"))
-            .reset_index()
-        )
-        recent_opponents["win_rate"] = recent_opponents["wins"] / recent_opponents["matches"]
-        recent_opponents = recent_opponents.sort_values("matches", ascending=False).head(15)
-        fig = px.bar(
-            recent_opponents,
-            x="matches",
-            y="opponent",
-            orientation="h",
-            title="Most common opponents",
-            hover_data=["wins", "win_rate", "avg_total_points"],
-        )
-        fig.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("Latest matches")
-    st.dataframe(player_latest_table(log), use_container_width=True)
-
-
-elif page == "Head-to-Head":
-    st.title("⚔️ Head-to-Head")
-    c1, c2 = st.columns(2)
-    with c1:
-        player_a = st.selectbox("Player A", players_alpha, index=0, key="h2h_a")
-    with c2:
-        player_b = st.selectbox("Player B", players_alpha, index=1 if len(players_alpha) > 1 else 0, key="h2h_b")
-
-    if player_a == player_b:
-        st.error("Choose two different players.")
-        st.stop()
-
-    summary, h2h_rows = get_head_to_head(matches, player_a, player_b)
-
-    h1, h2, h3, h4, h5 = st.columns(5)
-    h1.metric("H2H matches", f"{summary['matches']}")
-    h2.metric(f"{player_a} wins", f"{summary['player_a_wins']}")
-    h3.metric(f"{player_b} wins", f"{summary['player_b_wins']}")
-    h4.metric("Avg total points", format_number(summary["avg_total_points"], 2))
-    h5.metric("1st set O18.5", format_percent(summary["first_set_over_18_5_rate"]))
-
-    if h2h_rows.empty:
-        st.info("No direct H2H matches found for these players.")
-    else:
-        chart = h2h_rows.sort_values("date_time").copy()
-        chart["player_a_cum_wins"] = chart["selected_player_won"].cumsum()
-        chart["match_no"] = range(1, len(chart) + 1)
-        fig = px.line(
-            chart,
-            x="match_no",
-            y="player_a_cum_wins",
-            title=f"Cumulative H2H wins for {player_a}",
-            labels={"match_no": "H2H match number", "player_a_cum_wins": "Cumulative wins"},
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(h2h_display_table(h2h_rows, limit=100), use_container_width=True)
-
-
-elif page == "Live Odds":
-    st.title("📡 Live Odds + Setka Links")
-    st.markdown(
-        "Connect The Odds API when you add an API key, and use the official Setka Cup site for schedules/results."
-    )
-
-    if ODDS_IMPORT_ERROR is not None:
-        st.error(f"Odds/API dependencies could not be imported: {ODDS_IMPORT_ERROR}")
-        st.info("Run `pip install -r requirements.txt` and restart the app.")
-        st.stop()
-
-    st.subheader("Official Setka Cup")
-    oc1, oc2, oc3 = st.columns([1.3, 1, 2])
-    with oc1:
-        st.link_button("Open Setka Cup official site", OFFICIAL_SETKA_URL)
-    with oc2:
-        check_site = st.button("Check site status")
-    with oc3:
-        st.caption(
-            "The official Setka website can be dynamic. This app checks availability; plug in an official feed/API here if you have one."
-        )
-    if check_site:
-        status = fetch_official_site_status()
-        st.json(status_as_dict(status))
-
-    st.divider()
-    st.subheader("The Odds API")
-
-    secret_key = None
-    try:
-        secret_key = st.secrets.get("THE_ODDS_API_KEY")
-    except Exception:
-        secret_key = None
-    env_key = os.getenv("THE_ODDS_API_KEY")
-    entered_key = st.text_input(
-        "The Odds API key for this session",
-        type="password",
-        value="",
-        help="Leave blank to use THE_ODDS_API_KEY from environment or Streamlit secrets.",
-    )
-    api_key = entered_key or env_key or secret_key
-
-    if not api_key:
-        st.warning("No Odds API key found yet.")
-        st.write("Add it locally as an environment variable:")
-        st.code("export THE_ODDS_API_KEY='your_api_key_here'\nstreamlit run app.py", language="bash")
-        st.write("Or in Streamlit Cloud secrets:")
-        st.code('THE_ODDS_API_KEY = "your_api_key_here"', language="toml")
-        st.info("The code is already built; live odds will work after you add the key.")
-    else:
-        st.success("API key detected for this session.")
-
-    with st.expander("Discover sport keys", expanded=False):
-        all_sports = st.checkbox("Include inactive sports", value=False)
-        if st.button("List sports from The Odds API"):
-            if not api_key:
-                st.error("Add an API key first.")
+            if provider == "demo":
+                answer = demo_response(prompt, file_context=file_context, search_context=search_context)
             else:
-                try:
-                    sports_df, quota = list_sports(api_key, all_sports=all_sports)
-                    st.caption(f"Quota headers: {quota}")
-                    st.dataframe(sports_df, use_container_width=True, height=420)
-                except OddsAPIError as exc:
-                    st.error(str(exc))
-
-    st.markdown("### Fetch odds")
-    f1, f2, f3, f4 = st.columns([1.5, 1.2, 1.4, 1])
-    with f1:
-        sport_key = st.text_input(
-            "Sport key",
-            value="table_tennis",
-            help="Use 'List sports' to find the exact key available to your account.",
-        )
-    with f2:
-        regions = st.text_input("Regions", value="eu,uk,us")
-    with f3:
-        markets = st.text_input("Markets", value="h2h,totals")
-    with f4:
-        odds_format = st.selectbox("Odds format", ["decimal", "american"], index=0)
-
-    if st.button("Fetch odds"):
-        if not api_key:
-            st.error("Add an API key first.")
-        else:
-            try:
-                events, quota = fetch_odds(
-                    api_key,
-                    sport_key=sport_key,
-                    regions=regions,
-                    markets=markets,
-                    odds_format=odds_format,
-                )
-                flat = normalize_odds_events(events)
-                flat = add_implied_probabilities(flat, odds_format=odds_format)
-                st.caption(f"Quota headers: {quota}")
-                st.metric("Events returned", f"{len(events):,}")
-                if flat.empty:
-                    st.info("No odds rows returned for this sport/region/market combination.")
-                else:
-                    st.dataframe(flat, use_container_width=True, height=520)
-                    st.download_button(
-                        "Download odds CSV",
-                        data=flat.to_csv(index=False).encode("utf-8"),
-                        file_name=f"odds_{sport_key}.csv",
-                        mime="text/csv",
+                key = provider_key(provider, pasted_key)
+                if not key:
+                    secret_name = PROVIDERS[provider]["secret"]
+                    answer = (
+                        f"I need `{secret_name}` to call {PROVIDERS[provider]['label']}. "
+                        "Add it in Streamlit Secrets or paste a temporary key in the sidebar."
                     )
-            except OddsAPIError as exc:
-                st.error(str(exc))
-                st.info(
-                    "If the sport key is invalid or unavailable, use 'List sports' to find the exact key. Some accounts/plans may not include table tennis or Setka markets."
-                )
+                else:
+                    with st.spinner(f"Thinking with {PROVIDERS[provider]['label']}…"):
+                        answer = call_chat_model(provider, key, model, model_messages, temperature, max_tokens)
 
-    with st.expander("How to compare odds with app predictions", expanded=False):
-        st.markdown(
-            """
-1. Fetch odds for the correct table-tennis sport key and markets.
-2. Match the event player names to the names in this dataset.
-3. Use Match Predictor or ML Lab to estimate probabilities.
-4. Compare model probability to bookmaker implied probability. For decimal odds, implied probability is `1 / price` before bookmaker margin removal.
-            """
-        )
+            st.markdown(answer)
+            if sources:
+                with st.expander("Sources used for web context"):
+                    for i, item in enumerate(sources, start=1):
+                        st.markdown(f"{i}. [{item.get('title', 'Untitled')}]({item.get('url', '')})")
+        except Exception as exc:
+            answer = f"Sorry, I hit an error: `{exc}`"
+            st.error(answer)
 
-
-elif page == "Data Health":
-    st.title("🧪 Data Health")
-    st.markdown("Quick checks on the uploaded files and parsed scoring data.")
-
-    g1, g2, g3, g4 = st.columns(4)
-    g1.metric("Match rows", f"{len(matches):,}")
-    g2.metric("Players", f"{player_stats['player'].nunique():,}")
-    g3.metric("Avg total points", format_number(global_stats["total_points_mean"], 2))
-    g4.metric("Avg 1st-set points", format_number(global_stats["first_set_mean"], 2))
-
-    c1, c2 = st.columns(2)
-    with c1:
-        set_counts = matches["sets_played"].value_counts().sort_index().reset_index()
-        set_counts.columns = ["sets_played", "matches"]
-        fig = px.bar(set_counts, x="sets_played", y="matches", title="Matches by number of sets")
-        st.plotly_chart(fig, use_container_width=True)
-    with c2:
-        fig = px.histogram(matches, x="first_set_total", nbins=35, title="First-set total distribution")
-        fig.add_vline(x=18.5, line_dash="dash", line_color="#F97316")
-        st.plotly_chart(fig, use_container_width=True)
-
-    c3, c4 = st.columns(2)
-    with c3:
-        top_comp = matches["competition"].value_counts().head(20).reset_index()
-        top_comp.columns = ["competition", "matches"]
-        fig = px.bar(top_comp, x="matches", y="competition", orientation="h", title="Top competitions")
-        fig.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig, use_container_width=True)
-    with c4:
-        missing = matches.isna().sum().reset_index()
-        missing.columns = ["column", "missing_values"]
-        st.dataframe(missing, use_container_width=True)
-
-    st.subheader("Raw match sample")
-    sample_cols = [
-        "date_time",
-        "competition",
-        "player1",
-        "player2",
-        "winner",
-        "set_scores",
-        "total_points",
-        "first_set_total",
-        "sets_played",
-    ]
-    st.dataframe(matches[sample_cols].head(100), use_container_width=True)
+    st.session_state.messages.append({"role": "assistant", "content": answer})
