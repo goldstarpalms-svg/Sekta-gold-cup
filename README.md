@@ -2,6 +2,22 @@
 
 Interactive Streamlit app for Setka Cup/table-tennis analysis, built from the uploaded Setka match-history CSV and leaderboard CSV.
 
+
+## One-click Streamlit deploy
+
+This repo is deploy-ready for Streamlit Community Cloud. Use this direct deploy link:
+
+[![Deploy to Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://share.streamlit.io/deploy?repository=https://github.com/goldstarpalms-svg/Sekta-gold-cup&branch=arena/019f9bb4-sekta-gold-cup&mainModule=app.py)
+
+Deployment settings:
+
+- Repository: `https://github.com/goldstarpalms-svg/Sekta-gold-cup`
+- Branch: `arena/019f9bb4-sekta-gold-cup`
+- Main file path: `app.py`
+- Python: `3.11`
+
+The app works without secrets for the included historical data. Add `THE_ODDS_API_KEY` only if you want the Live Odds page to call The Odds API.
+
 It includes:
 
 - transparent rule-blend prediction

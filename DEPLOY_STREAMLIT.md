@@ -1,5 +1,18 @@
 # Deploy to Streamlit Community Cloud
 
+## One-click deploy
+
+Use this direct Streamlit deploy link:
+
+[![Deploy to Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://share.streamlit.io/deploy?repository=https://github.com/goldstarpalms-svg/Sekta-gold-cup&branch=arena/019f9bb4-sekta-gold-cup&mainModule=app.py)
+
+If Streamlit asks for settings, use:
+
+- Repository: `https://github.com/goldstarpalms-svg/Sekta-gold-cup`
+- Branch: `arena/019f9bb4-sekta-gold-cup`
+- Main file path: `app.py`
+- Python: `3.11`
+
 This repository is now structured as a Streamlit app. The entry point is:
 
 ```text
