@@ -1,36 +1,32 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.Python
-.venv/
-venv/
+# Secrets
 .env
+*.key
 .env.local
 .env.production
 
-# OS / editor
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+backend/data/
+backend/memory_store/
+*.db
+*.sqlite
+
+# Node
+node_modules/
+frontend/dist/
+frontend/build/
+
+# OS
 .DS_Store
 Thumbs.db
-.idea/
-.vscode/
 
-# Streamlit secrets
-.streamlit/secrets.toml
+# Uploads & Generated
+uploads/
+generated_images/
+chats_export/
 
-# Logs / temporary exports
+# Logs
 *.log
-exports/
-
-# Trained model artifacts can be regenerated
-models/*.joblib
-models/*.pkl
-
-# Build/cache outputs
-build/
-dist/
-.coverage
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/

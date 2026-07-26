@@ -182,7 +182,7 @@ def extract_uploaded_file(uploaded_file: Any) -> str:
             if suffix == ".csv":
                 try:
                     df = pd.read_csv(io.BytesIO(data))
-                    return f"File: {name}\nCSV shape: {df.shape}\nPreview:\n{df.head(25).to_markdown(index=False)}"
+                    return f"File: {name}\nCSV shape: {df.shape}\nPreview:\n{df.head(25).to_csv(index=False)}"
                 except Exception:
                     pass
             return f"File: {name}\n\n{data.decode('utf-8', errors='replace')}"
@@ -192,7 +192,7 @@ def extract_uploaded_file(uploaded_file: Any) -> str:
             chunks = [f"File: {name}", f"Sheets: {', '.join(excel.sheet_names)}"]
             for sheet in excel.sheet_names[:3]:
                 df = pd.read_excel(excel, sheet_name=sheet, nrows=25)
-                chunks.append(f"\nSheet: {sheet}\nShape preview: {df.shape}\n{df.to_markdown(index=False)}")
+                chunks.append(f"\nSheet: {sheet}\nShape preview: {df.shape}\n{df.to_csv(index=False)}")
             return "\n".join(chunks)
 
         if suffix == ".pdf":

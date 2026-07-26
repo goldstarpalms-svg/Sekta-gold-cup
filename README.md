@@ -1,51 +1,75 @@
-# 🤖 SEKTA GOLD AI Chatbot
+# 🛡️ SEKTA GOLD — Cyber Shield
 
-A Streamlit-ready AI chatbot with a black-and-gold interface, provider selection, file context, optional web context, and chat export.
+A **defensive security operations dashboard** built with Streamlit. It generates
+detection, alerting, and hardening artifacts for your own servers and edge.
 
-## One-click Streamlit deploy
+> 🟢 **Defensive-only.** This dashboard performs **no scanning, exploitation, or
+> attack** against any system. It builds configs and analyzes logs you provide.
 
-[![Deploy to Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://share.streamlit.io/deploy?repository=https://github.com/goldstarpalms-svg/Sekta-gold-cup&branch=arena/019f9bb4-sekta-gold-cup&mainModule=app.py)
+---
 
-Deployment settings:
+## What it does
 
-- Repository: `https://github.com/goldstarpalms-svg/Sekta-gold-cup`
-- Branch: `arena/019f9bb4-sekta-gold-cup`
-- Main file path: `app.py`
-- Python: `3.11`
+| Tool | Purpose |
+|------|---------|
+| 🔔 **Slack Alerts** | Central notifier — test/verify your webhook before relying on it. |
+| 🍯 **Honeypot Canaries** | Generate decoy files + a host monitor script (`inotifywait`) that alerts Slack when a canary is touched. |
+| 🌍 **IP Geolocation** | Enrich attacker IPs via [ipapi.co](https://ipapi.co) (city/country/ASN) and plot them on a world map. |
+| 🚫 **Fail2Ban Builder** | Generate `jail.local` + a filter regex from a sample log line. |
+| ☁️ **Cloudflare WAF** | Compose custom firewall expressions (block by IP / ASN / country / path). |
+| 🔍 **File Integrity** | SHA-256 baselines + change detection for important files. |
+| 💾 **Encrypted Backup** | Generate a `tar` + `gpg` backup script with a retention policy. |
+| 📜 **auth.log Analyzer** | Detect brute-force SSH attempts and rank offending IPs; send a Slack summary. |
+| 🤖 **AI Security Advisor** | LLM reads your dashboard context (brute-force IPs, geolocations) and writes plain-English analysis + defensive recommendations. |
+| 💬 **AI Assistant** | General-purpose technical chat — strong across coding, research, writing, data — via Groq / Gemini / OpenAI. Toggle **🔍 Web search** to inject live results (Tavily if keyed, else Wikipedia/DuckDuckGo) with citations. |
 
-## Features
+**Architecture note:** the Streamlit app is a *generator + dashboard*. It never
+runs subprocess commands on the host it runs on. Scripts it produces (canary
+monitor, backup, Fail2Ban configs) are plain text that **you** read, review, and
+deploy on your own server.
 
-- AI chat through Groq, OpenAI, or Gemini
-- Demo mode so the app opens even before secrets are added
-- Upload context from TXT, Markdown, CSV, Excel, PDF, DOCX, code, JSON, logs, and more
-- Optional web context via Tavily when keyed, with a keyless DuckDuckGo/Wikipedia fallback
-- Custom system instructions
-- Export chat transcript as Markdown
-- Streamlit Community Cloud deployment ready
+---
 
-## Required secrets
-
-Add at least one provider key in **Streamlit Cloud → App settings → Secrets**:
-
-```toml
-GROQ_API_KEY = "your_groq_key"
-OPENAI_API_KEY = "your_openai_key"
-GEMINI_API_KEY = "your_gemini_key"
-```
-
-Optional:
-
-```toml
-TAVILY_API_KEY = "your_tavily_key"
-```
-
-## Run locally
+## Setup
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-For local secrets, copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and add your keys.
+Python 3.11+. Dependencies (`streamlit`, `pandas`, `plotly`, `httpx`) are all
+listed in `requirements.txt`.
+
+## Secrets
+
+Put sensitive values in `.streamlit/secrets.toml` (see
+`.streamlit/secrets.toml.example`), or as environment variables / in `.env`.
+
+| Key | Required | Notes |
+|-----|----------|-------|
+| `SLACK_WEBHOOK_URL` | For alerting | Create at https://api.slack.com/messaging/webhooks |
+| `IPAPI_KEY` | Optional | Higher ipapi.co limits; free tier works without it |
+| `GROQ_API_KEY` | For AI (any one) | Free: console.groq.com/keys |
+| `GEMINI_API_KEY` | For AI (any one) | Free: aistudio.google.com/apikey |
+| `OPENAI_API_KEY` | For AI (any one) | Paid: platform.openai.com/api-keys |
+| `TAVILY_API_KEY` | Optional | Higher-quality web search in the AI Assistant; works without it via Wikipedia/DuckDuckGo |
+
+Webhook URLs are masked in the UI and never hardcoded. The AI tabs work with
+**any one** provider key; blank ones are skipped gracefully. Web search works
+**without any key** (Wikipedia + DuckDuckGo Instant Answer); add a Tavily key
+to upgrade to AI-optimized results.
+
+## Deploy
+
+See [`DEPLOY_STREAMLIT.md`](DEPLOY_STREAMLIT.md) for Streamlit Cloud. The app
+redeploys automatically when `main` is updated. Add your secrets under
+**Streamlit Cloud → App settings → Secrets**.
+
+---
+
+## Safety & scope
+
+This project is strictly defensive. It contains no offensive tooling and is
+intended for protecting systems you own or are authorized to harden. See
+[`SECURITY.md`](SECURITY.md).
