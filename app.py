@@ -1,971 +1,869 @@
-"""
-SEKTA GOLD - Cyber Shield
-=========================
-
-A defensive security operations dashboard. DEFENSIVE USE ONLY - no offensive
-tooling, scanning, exploitation, or attack capability is included or intended.
-
-What it does (each is a standard blue-team control):
-  * Slack alerting              - central notifier used by the other tools
-  * Honeypot canary generator   - decoy files + a monitor script that alerts
-                                  on access (host-side, you deploy it)
-  * IP geolocation & threat map - enrich attacker IPs via ipapi.co
-  * Fail2Ban config generator   - build jail + filter rules from log patterns
-  * Cloudflare WAF rule builder - compose firewall expressions
-  * File integrity monitor      - SHA-256 baselines + change detection
-  * Encrypted backup generator  - tar + gpg backup script with retention
-  * auth.log analyzer           - detect brute-force SSH attempts
-  * AI security advisor         - LLM explains threats + recommends defensive
-                                  actions (reads your dashboard context)
-  * AI assistant                - general-purpose technical chat via Groq /
-                                  Gemini / OpenAI (OpenAI-compatible API)
-
-Design notes:
-  * The Streamlit app is a GENERATOR + DASHBOARD. It never runs subprocess
-    commands on the host. Scripts it produces are plain text that you read,
-    review, and deploy on your own server.
-  * Secrets (Slack webhook URL, ipapi key) are read from
-    st.secrets / environment variables, never hardcoded, and masked in the UI.
-"""
+from __future__ import annotations
 
 import os
-import re
-import io
-import json
-import time
-import base64
-import hashlib
-import zipfile
-from datetime import datetime, timezone
-from collections import Counter, defaultdict
-from urllib.parse import quote
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:
+    # python-dotenv is optional; environment variables and Streamlit secrets still work.
+    pass
 
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
-try:
-    import httpx  # already in requirements.txt
-    _HAS_HTTPX = True
-except Exception:  # pragma: no cover - optional fallback
-    _HAS_HTTPX = False
+from src.setka_core import (
+    build_context,
+    comparison_table,
+    format_number,
+    format_percent,
+    get_head_to_head,
+    load_raw_data,
+    predict_match,
+)
 
 try:
-    import plotly.express as px  # already in requirements.txt
-    _HAS_PLOTLY = True
-except Exception:  # pragma: no cover
-    _HAS_PLOTLY = False
+    from src.ml_pipeline import (
+        load_model_bundle,
+        metrics_table,
+        predict_with_bundle,
+        save_model_bundle,
+        train_model_bundle,
+    )
+
+    ML_IMPORT_ERROR = None
+except Exception as exc:  # pragma: no cover - shown inside the UI
+    ML_IMPORT_ERROR = exc
+
+try:
+    from src.odds_api import (
+        OddsAPIError,
+        add_implied_probabilities,
+        fetch_odds,
+        list_sports,
+        normalize_odds_events,
+    )
+    from src.setka_live import OFFICIAL_SETKA_URL, fetch_official_site_status, status_as_dict
+    from src.source_registry import categories as source_categories
+    from src.source_registry import registry_dataframe, summary_by_category
+
+    ODDS_IMPORT_ERROR = None
+except Exception as exc:  # pragma: no cover - shown inside the UI
+    ODDS_IMPORT_ERROR = exc
 
 
-# --------------------------------------------------------------------------
-# PAGE CONFIG
-# --------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Sekta Gold - Cyber Shield",
-    page_icon="🛡️",
+    page_title="Setka Predictor",
+    page_icon="🏓",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.markdown(
-    """
+
+CUSTOM_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
-html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif; }
-.stApp { background: #0A0A0B; color: #E5E5E5; }
-[data-testid="stSidebar"] { background: #0A0A0B; border-right: 1px solid #1f1f22; }
-[data-testid="stHeader"] { background: rgba(10,10,11,0.85); backdrop-filter: blur(12px); }
-h1, h2, h3 { color: #fff; letter-spacing: -0.02em; }
-.kicker { color: #FFC700; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; font-size: 12px; }
-.card { background: #141415; border: 1px solid #1f1f22; border-radius: 14px; padding: 18px; }
-.mono { font-family: 'JetBrains Mono', monospace; }
-code, pre { font-family: 'JetBrains Mono', monospace !important; }
-.stButton > button { border-radius: 10px; font-weight: 500; }
-a { color: #FFC700 !important; }
-#MainMenu { visibility: hidden; }
-footer { visibility: hidden; }
-[data-testid="stStatusWidget"] { display: none; }
-.tag-ok    { color: #34d399; font-weight: 600; }
-.tag-warn  { color: #fbbf24; font-weight: 600; }
-.tag-bad   { color: #f87171; font-weight: 600; }
-.defensive-banner { background: #14201a; border: 1px solid #1f3a2b; border-radius: 10px; padding: 10px 14px; color: #86efac; font-size: 13px; }
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-
-# --------------------------------------------------------------------------
-# SHARED UTILITIES
-# --------------------------------------------------------------------------
-def load_secret(name: str, default=None):
-    """Read a secret from Streamlit secrets first, then environment."""
-    try:
-        if name in st.secrets:
-            return st.secrets[name]
-    except Exception:
-        pass
-    return os.environ.get(name, default)
-
-
-def mask_secret(value: str, keep: int = 10) -> str:
-    """Partially mask a secret for safe display."""
-    if not value:
-        return "(not set)"
-    if len(value) <= keep:
-        return "*" * len(value)
-    return value[:keep] + "…" + "*" * 6
-
-
-def utcnow() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
-def download_text(filename: str, text: str, label: str = "Download"):
-    """Render a download button for a text payload."""
-    st.download_button(
-        label=label,
-        data=text.encode("utf-8"),
-        file_name=filename,
-        mime="text/plain",
-    )
-
-
-def send_slack(message: str, webhook: str | None = None) -> tuple[bool, str]:
-    """POST a message to a Slack incoming webhook. Returns (ok, detail).
-
-    Purely outbound notification - no inbound capability.
-    """
-    webhook = webhook or load_secret("SLACK_WEBHOOK_URL")
-    if not webhook:
-        return False, "No Slack webhook configured. Set SLACK_WEBHOOK_URL in Streamlit secrets or .env."
-    if not webhook.startswith("https://hooks.slack.com/"):
-        return False, "Refusing to send: webhook does not look like a Slack incoming webhook URL."
-    if not _HAS_HTTPX:
-        return False, "httpx is not installed (add it to requirements.txt)."
-    try:
-        with httpx.Client(timeout=15.0) as client:
-            r = client.post(webhook, json={"text": message})
-        if r.status_code == 200 and r.text.strip() == "ok":
-            return True, "Delivered to Slack."
-        return False, f"Slack responded HTTP {r.status_code}: {r.text[:200]}"
-    except Exception as e:  # noqa: BLE001
-        return False, f"Request failed: {e}"
-
-
-def geolocate_ip(ip: str, api_key: str | None = None) -> dict | None:
-    """Look up one IP via ipapi.co. Returns parsed dict or None on failure."""
-    ip = (ip or "").strip()
-    if not ip:
-        return None
-    url = f"https://ipapi.co/{ip}/json/"
-    params = {}
-    if api_key:
-        params["key"] = api_key
-    if not _HAS_HTTPX:
-        return None
-    try:
-        with httpx.Client(timeout=15.0) as client:
-            r = client.get(url, params=params)
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        if data.get("error"):
-            return None
-        return data
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def kv_card(label: str, value, sub: str = ""):
-    st.markdown(
-        f"""<div class="card"><div class="kicker">{label}</div>
-        <div style="font-size:26px;font-weight:700;color:#fff;margin-top:4px">{value}</div>
-        <div style="color:#9ca3af;font-size:12px;margin-top:2px">{sub}</div></div>""",
-        unsafe_allow_html=True,
-    )
-
-
-# --------------------------------------------------------------------------
-# AI PROVIDERS (OpenAI-compatible /chat/completions: Groq, Gemini, OpenAI)
-# --------------------------------------------------------------------------
-AI_PROVIDERS = {
-    "Groq (Free)": {
-        "icon": "⚡", "env_key": "GROQ_API_KEY", "signup": "console.groq.com/keys",
-        "base_url": "https://api.groq.com/openai/v1",
-        "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
-        "default_model": "llama-3.3-70b-versatile",
-    },
-    "Gemini (Free)": {
-        "icon": "💎", "env_key": "GEMINI_API_KEY", "signup": "aistudio.google.com/apikey",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "models": ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
-        "default_model": "gemini-2.0-flash",
-    },
-    "OpenAI": {
-        "icon": "🧠", "env_key": "OPENAI_API_KEY", "signup": "platform.openai.com/api-keys",
-        "base_url": "https://api.openai.com/v1",
-        "models": ["gpt-4o", "gpt-4o-mini"],
-        "default_model": "gpt-4o-mini",
-    },
+.block-container { padding-top: 1.6rem; padding-bottom: 2rem; }
+[data-testid="stMetricValue"] { font-size: 1.8rem; }
+.small-muted { color: #94A3B8; font-size: 0.92rem; }
+.card {
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 16px;
+    padding: 1rem 1.15rem;
+    background: rgba(15, 23, 42, 0.48);
 }
+.good { color: #22C55E; font-weight: 700; }
+.warn { color: #F59E0B; font-weight: 700; }
+.bad { color: #EF4444; font-weight: 700; }
+</style>
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
-def ai_key_ok(provider_name: str) -> bool:
-    return bool(load_secret(AI_PROVIDERS[provider_name]["env_key"]))
+@st.cache_data(show_spinner="Loading and preparing Setka data...")
+def load_app_context() -> dict:
+    matches, leaderboard = load_raw_data()
+    return build_context(matches, leaderboard)
 
 
-def ai_picker():
-    """Render provider + model selectors. Returns (provider_name, model)."""
-    cols = st.columns([1, 1])
-    with cols[0]:
-        provider_name = st.selectbox(
-            "Model provider", list(AI_PROVIDERS.keys()),
-            format_func=lambda n: f"{AI_PROVIDERS[n]['icon']} {n}", key="ai_provider",
-        )
-    prov = AI_PROVIDERS[provider_name]
-    with cols[1]:
-        model = st.selectbox("Model", prov["models"], key=f"ai_model_{provider_name}")
-    if not ai_key_ok(provider_name):
-        st.warning(
-            f"No `{prov['env_key']}` set. Get a free key at **{prov['signup']}**, add it to "
-            f"`.streamlit/secrets.toml` (or env), then reload."
-        )
-    return provider_name, model
+ctx = load_app_context()
+matches = ctx["matches"]
+player_log = ctx["player_log"]
+player_stats = ctx["player_stats"]
+global_stats = ctx["global_stats"]
+
+players_by_elo = player_stats.sort_values(["elo", "matches"], ascending=[False, False])[
+    "player"
+].tolist()
+players_alpha = sorted(player_stats["player"].dropna().unique().tolist())
+MODEL_BUNDLE_PATH = Path("models/setka_ml_bundle.joblib")
 
 
-def stream_chat(messages, provider_name: str, model: str, temperature: float = 0.4):
-    """Stream an OpenAI-compatible chat completion. Yields text deltas.
-
-    Works identically across Groq, Gemini (OpenAI-compat), and OpenAI.
-    """
-    prov = AI_PROVIDERS[provider_name]
-    api_key = load_secret(prov["env_key"])
-    if not api_key:
-        yield "⚠️ No API key configured for this provider. Set it in Streamlit secrets."
-        return
-    if not _HAS_HTTPX:
-        yield "⚠️ httpx is not installed (it's in requirements.txt)."
-        return
-    url = prov["base_url"].rstrip("/") + "/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {"model": model, "messages": messages, "stream": True, "temperature": temperature}
-    try:
-        with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-            with client.stream("POST", url, headers=headers, json=payload) as r:
-                if r.status_code != 200:
-                    body = r.read().decode("utf-8", "ignore")[:400]
-                    yield f"⚠️ API error HTTP {r.status_code}: {body}"
-                    return
-                for line in r.iter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        delta = json.loads(data)["choices"][0]["delta"].get("content")
-                        if delta:
-                            yield delta
-                    except Exception:  # noqa: BLE001 - skip malformed keepalive chunks
-                        continue
-    except Exception as e:  # noqa: BLE001
-        yield f"⚠️ Request failed: {e}"
+@st.cache_resource(show_spinner="Training ML models. This can take a few minutes on the full dataset...")
+def train_ml_cached(algorithm: str, max_training_rows: int | None):
+    return train_model_bundle(
+        matches,
+        algorithm=algorithm,
+        max_training_rows=max_training_rows,
+    )
 
 
-# --------------------------------------------------------------------------
-# WEB SEARCH (multi-source, robust, no hard dependency)
-# --------------------------------------------------------------------------
-_UA = {"User-Agent": "sekta-cybershield/1.0 (+defensive use)"}
+with st.sidebar:
+    st.title("🏓 Setka Predictor")
+    st.caption("Prediction dashboard from uploaded Setka match history + Elo leaderboard.")
+    st.divider()
+
+    page = st.radio(
+        "Go to",
+        [
+            "Match Predictor",
+            "ML Lab",
+            "Live Odds",
+            "Data Sources",
+            "Leaderboard",
+            "Player Explorer",
+            "Head-to-Head",
+            "Data Health",
+        ],
+    )
+
+    st.divider()
+    st.metric("Matches", f"{global_stats['match_count']:,}")
+    st.metric("Players", f"{global_stats['player_count']:,}")
+    st.caption(
+        f"Date range: {global_stats['date_min'].date()} → {global_stats['date_max'].date()}"
+    )
+    st.caption(
+        "Rule model: Elo + form + H2H. ML Lab: scikit-learn/XGBoost training."
+    )
 
 
-def _tavily_results(query: str, max_results: int = 5):
-    """Tavily (AI-friendly) search. Requires TAVILY_API_KEY."""
-    key = load_secret("TAVILY_API_KEY")
-    if not key or not _HAS_HTTPX:
-        return []
-    try:
-        from tavily import TavilyClient  # in requirements.txt
-        res = TavilyClient(key).search(query, max_results=max_results)
-        return [
-            {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")}
-            for r in res.get("results", [])
+def probability_bar(pred: dict) -> go.Figure:
+    fig = go.Figure(
+        data=[
+            go.Bar(
+                y=[pred["player_a"], pred["player_b"]],
+                x=[pred["player_a_win_probability"], pred["player_b_win_probability"]],
+                orientation="h",
+                marker_color=["#22C55E", "#F97316"],
+                text=[
+                    format_percent(pred["player_a_win_probability"]),
+                    format_percent(pred["player_b_win_probability"]),
+                ],
+                textposition="auto",
+                hovertemplate="%{y}: %{x:.1%}<extra></extra>",
+            )
         ]
-    except Exception:  # noqa: BLE001
-        return []
+    )
+    fig.update_layout(
+        title="Win probability",
+        xaxis=dict(range=[0, 1], tickformat=".0%"),
+        yaxis=dict(autorange="reversed"),
+        height=260,
+        margin=dict(l=10, r=10, t=50, b=10),
+    )
+    return fig
 
 
-def _wikipedia_results(query: str, max_results: int = 3):
-    """Wikipedia MediaWiki search. No key required."""
-    if not _HAS_HTTPX:
-        return []
-    out = []
-    try:
-        with httpx.Client(timeout=15.0, headers=_UA) as c:
-            r = c.get("https://en.wikipedia.org/w/api.php", params={
-                "action": "query", "list": "search", "srlimit": max_results,
-                "format": "json", "srsearch": query, "srprop": "snippet",
-            })
-            for h in r.json().get("query", {}).get("search", []):
-                title = h["title"]
-                snippet = re.sub(r"<[^>]+>", "", h.get("snippet", ""))
-                out.append({"title": title,
-                            "url": "https://en.wikipedia.org/wiki/" + quote(title),
-                            "snippet": snippet})
-    except Exception:  # noqa: BLE001
-        pass
+def over_under_bar(label: str, over_prob: float, under_prob: float) -> go.Figure:
+    fig = go.Figure(
+        data=[
+            go.Bar(
+                x=["Over", "Under"],
+                y=[over_prob, under_prob],
+                marker_color=["#38BDF8", "#A78BFA"],
+                text=[format_percent(over_prob), format_percent(under_prob)],
+                textposition="auto",
+                hovertemplate="%{x}: %{y:.1%}<extra></extra>",
+            )
+        ]
+    )
+    fig.update_layout(
+        title=label,
+        yaxis=dict(range=[0, 1], tickformat=".0%"),
+        height=260,
+        margin=dict(l=10, r=10, t=50, b=10),
+    )
+    return fig
+
+
+def h2h_display_table(df: pd.DataFrame, limit: int = 25) -> pd.DataFrame:
+    cols = [
+        "date_time",
+        "competition",
+        "player1",
+        "player2",
+        "winner",
+        "set_scores",
+        "total_points",
+        "first_set_total",
+        "sets_played",
+    ]
+    out = df.loc[:, [c for c in cols if c in df.columns]].head(limit).copy()
+    if "date_time" in out:
+        out["date_time"] = pd.to_datetime(out["date_time"]).dt.strftime("%Y-%m-%d %H:%M")
     return out
 
 
-def _ddg_instant_answer(query: str):
-    """DuckDuckGo Instant Answer API. No key required."""
-    if not _HAS_HTTPX:
-        return []
-    try:
-        with httpx.Client(timeout=15.0, headers=_UA) as c:
-            d = c.get("https://api.duckduckgo.com/", params={
-                "q": query, "format": "json", "no_html": 1, "skip_disambig": 1,
-            }).json()
-        if d.get("AbstractText"):
-            return [{"title": d.get("Heading", query),
-                     "url": d.get("AbstractURL", "https://duckduckgo.com/?q=" + quote(query)),
-                     "snippet": d["AbstractText"]}]
-    except Exception:  # noqa: BLE001
-        pass
-    return []
-
-
-def web_search(query: str, max_results: int = 5):
-    """Multi-source web search -> normalized {title, url, snippet} dicts.
-
-    Order: Tavily (if key) -> Wikipedia -> DuckDuckGo Instant Answer.
-    Always returns something when any source works; never raises.
-    """
-    res = _tavily_results(query, max_results)
-    if res:
-        return res[:max_results]
-    res = _wikipedia_results(query, max_results=3)
-    res += _ddg_instant_answer(query)
-    return res[:max_results]
-
-
-# --------------------------------------------------------------------------
-# SECTIONS
-# --------------------------------------------------------------------------
-def header(title: str, subtitle: str):
-    st.markdown(f'<div class="kicker">🛡️ Sekta Gold · Cyber Shield</div>', unsafe_allow_html=True)
-    st.markdown(f"## {title}")
-    st.caption(subtitle)
-
-
-def section_overview():
-    header("Operations Overview", "Status of integrations and quick navigation.")
-
-    slack_on = bool(load_secret("SLACK_WEBHOOK_URL"))
-    ipapi_key = bool(load_secret("IPAPI_KEY"))
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        kv_card("Slack Alerting", "ON" if slack_on else "OFF", mask_secret(load_secret("SLACK_WEBHOOK_URL")))
-    with c2:
-        kv_card("ipapi.co Key", "SET" if ipapi_key else "FREE TIER", "Geolocation enrichment")
-    with c3:
-        kv_card("Mode", "Defensive", "No offensive capability")
-    with c4:
-        kv_card("Local Time", utcnow().split(" ")[1], "UTC")
-
-    st.markdown('<div class="defensive-banner">🟢 <b>Defensive-only.</b> This dashboard generates detection, alerting, and hardening artifacts. It performs no scanning, exploitation, or attack against any system.</div>', unsafe_allow_html=True)
-
-    st.markdown("### What each tool does")
-    rows = [
-        ("Slack Alerts", "Central notifier - test and verify your webhook before relying on it."),
-        ("Honeypot Canaries", "Generate decoy files + a host monitor script that alerts Slack when touched."),
-        ("IP Geolocation", "Enrich attacker IPs with city/country/ASN and plot them on a world map."),
-        ("Fail2Ban Builder", "Generate jail.local + filter regex from a sample log line."),
-        ("Cloudflare WAF", "Compose firewall expressions (block by IP/ASN/country/path)."),
-        ("File Integrity", "SHA-256 baselines and change detection for important files."),
-        ("Encrypted Backup", "Generate a tar + gpg backup script with retention policy."),
-        ("auth.log Analyzer", "Detect brute-force SSH patterns and rank offending IPs."),
-        ("AI Security Advisor", "LLM explains threats + recommends defensive actions from your dashboard data."),
-        ("AI Assistant", "General-purpose technical chat with optional live web search — Groq, Gemini, or OpenAI."),
+def player_latest_table(df: pd.DataFrame, limit: int = 25) -> pd.DataFrame:
+    cols = [
+        "date_time",
+        "competition",
+        "opponent",
+        "won",
+        "set_scores",
+        "points_for",
+        "points_against",
+        "total_points",
+        "first_set_total",
     ]
-    st.table(pd.DataFrame(rows, columns=["Tool", "Purpose"]))
-
-
-def section_alerts():
-    header("Slack Alerting", "Central notifier used by the other tools. Test it here.")
-
-    webhook = load_secret("SLACK_WEBHOOK_URL")
-    st.markdown(f"**Configured webhook:** `{mask_secret(webhook)}`")
-    if not webhook:
-        st.info("No webhook set. Add `SLACK_WEBHOOK_URL` to `.streamlit/secrets.toml` (recommended) or `.env`, then reload. Create one at https://api.slack.com/messaging/webhooks")
-
-    with st.form("slack_test"):
-        msg = st.text_area("Message", value=f"🛡️ Cyber Shield test ping at {utcnow()}", height=80)
-        col_a, col_b = st.columns([1, 3])
-        with col_a:
-            override = st.text_input("Override webhook (optional)", type="password", placeholder="https://hooks.slack.com/services/...")
-        submitted = st.form_submit_button("Send test alert", type="primary")
-
-    if submitted:
-        with st.spinner("Sending…"):
-            ok, detail = send_slack(msg, webhook=override or None)
-        if ok:
-            st.success(detail)
-        else:
-            st.error(detail)
-
-
-def section_honeypot():
-    header("Honeypot Canaries", "Decoy files that look tempting but are useless, plus a monitor that alerts Slack when touched.")
-
-    st.markdown("Canaries are deployed on YOUR server. The monitor uses `inotifywait` to watch for access and fires a Slack alert. Generated canaries contain clearly-fake tokens so they're worthless if exfiltrated.")
-
-    presets = {
-        "aws_keys.txt": "# AWS CLI credentials (DECOY)\n[default]\naws_access_key_id = AKIAFAKECANARY000001\naws_secret_access_key = CANARY-please-report-this-access-0001\nregion = us-east-1\n",
-        ".env.prod": "# Production environment (DECOY)\nDATABASE_URL=postgres://canary:NOT-REAL-PASSWORD@db.internal:5432/prod\nSTRIPE_SECRET_KEY=sk_live_CANARY_FAKE_0001\nADMIN_TOKEN=canary-token-do-not-use\n",
-        "id_rsa": "-----BEGIN OPENSSH PRIVATE KEY-----\nDECOY CANARY KEY - REPORT ACCESS TO SECURITY - NOT A REAL KEY\n-----END OPENSSH PRIVATE KEY-----\n",
-        "backup.sql.header": "-- MySQL dump (DECOY) -- canary file, report access\n",
-    }
-
-    chosen = st.multiselect("Canary files to generate", list(presets.keys()), default=list(presets.keys())[:2])
-    deploy_dir = st.text_input("Deploy directory on your server", value="/opt/canary")
-
-    webhook = load_secret("SLACK_WEBHOOK_URL")
-    if not webhook:
-        st.warning("No Slack webhook configured. The monitor script will still be generated, but alerts will fail until SLACK_WEBHOOK_URL is set.")
-
-    # The monitor script - host-side, text only. Never executed by this app.
-    monitor = f"""#!/usr/bin/env bash
-# Canary honeypot monitor - DEPLOY ON YOUR SERVER.
-# Requires: inotify-tools (apt-get install inotify-tools), curl.
-# Alerts Slack whenever a canary file is read/opened.
-set -u
-CANARY_DIR="{deploy_dir}"
-WEBHOOK="${{SLACK_WEBHOOK_URL:-{webhook or 'PUT_YOUR_SLACK_WEBHOOK_HERE'}}}"
-HOST="$(hostname -s 2>/dev/null || echo host)"
-
-[ -d "$CANARY_DIR" ] || {{ echo "Missing $CANARY_DIR" >&2; exit 1; }}
-command -v inotifywait >/dev/null || {{ echo "Install inotify-tools" >&2; exit 1; }}
-
-echo "Watching $CANARY_DIR for access…"
-inotifywait -m -r -e open,access --format '%w%f %e %T' --timefmt '%H:%M:%S' "$CANARY_DIR" |
-while read -r file events ts; do
-  msg="🚨 CANARY TRIPPED on *$HOST* at $ts UTC\\nFile: \\\`$file\\\`\\nEvent: $events\\nLikely unauthorized access."
-  curl -s -X POST -H 'Content-type: application/json' \\
-    --data "$(printf '{{"text":"%s"}}' "$msg")" "$WEBHOOK" >/dev/null
-  logger -t canary "tripped: $file $events"
-done
-"""
-
-    st.markdown("#### Generated canary files")
-    for name in chosen:
-        with st.expander(name):
-            st.code(presets[name], language="text")
-
-    st.markdown("#### Monitor script (`canary-watch.sh`)")
-    st.code(monitor, language="bash")
-
-    # Bundle everything into a zip for easy download
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for name in chosen:
-            z.writestr(f"canary/{name}", presets[name])
-        z.writestr("canary/canary-watch.sh", monitor)
-        z.writestr("canary/README.txt", "Canary honeypot pack generated by Sekta Gold Cyber Shield.\nDeploy the canary/ directory to your server and run canary-watch.sh.\nThese files are DECOYS containing fake tokens.\n")
-    buf.seek(0)
-    st.download_button("⬇️ Download canary pack (.zip)", buf, file_name="cyber_shield_canary_pack.zip", mime="application/zip")
-
-    st.caption("Deploy tip: place canaries where an attacker who got in would naturally poke around (home dirs, /var/backups, app roots). Make permissions look real.")
-
-
-def section_geo():
-    header("IP Geolocation & Threat Map", "Enrich attacker IPs via ipapi.co and plot them on a world map.")
-    st.caption("Free tier: ~30k requests/month. Leave the API key blank to use the free tier, or set IPAPI_KEY for higher limits.")
-
-    ips_raw = st.text_area("IPs (one per line, or comma-separated)", height=120, placeholder="203.0.113.5\n198.51.100.10")
-    ips = [x.strip() for x in re.split(r"[\n,]+", ips_raw) if x.strip()]
-    api_key = load_secret("IPAPI_KEY")
-
-    if st.button("Geolocate", type="primary", disabled=not ips):
-        rows = []
-        bar = st.progress(0.0, text="Looking up IPs…")
-        for i, ip in enumerate(ips):
-            data = geolocate_ip(ip, api_key=api_key)
-            if data:
-                rows.append({
-                    "IP": ip,
-                    "Country": data.get("country_name", "?"),
-                    "Region": data.get("region", "?"),
-                    "City": data.get("city", "?"),
-                    "Org/ISP": data.get("org", "?"),
-                    "ASN": data.get("asn", "?"),
-                    "Lat": data.get("latitude"),
-                    "Lon": data.get("longitude"),
-                })
-            else:
-                rows.append({"IP": ip, "Country": "(lookup failed)", "Region": "?", "City": "?", "Org/ISP": "?", "ASN": "?", "Lat": None, "Lon": None})
-            time.sleep(1.0)  # respect free-tier rate guidance
-            bar.progress((i + 1) / len(ips))
-        bar.empty()
-
-        if not rows:
-            st.warning("No results.")
-            return
-
-        st.session_state["geo_rows"] = rows
-
-    rows = st.session_state.get("geo_rows")
-    if rows:
-        df = pd.DataFrame(rows)
-        st.dataframe(df.drop(columns=["Lat", "Lon"]), use_container_width=True, hide_index=True)
-        if _HAS_PLOTLY:
-            geo_df = df.dropna(subset=["Lat", "Lon"])
-            if not geo_df.empty:
-                fig = px.scatter_geo(
-                    geo_df, lat="Lat", lon="Lon", hover_name="IP",
-                    hover_data=["Country", "City", "Org/ISP"],
-                    projection="natural earth", color_discrete_sequence=["#FFC700"],
-                )
-                fig.update_layout(
-                    paper_bgcolor="#0A0A0B", geo=dict(bgcolor="#0A0A0B", showland=True, landcolor="#141415",
-                    countrycolor="#27272a", lakecolor="#0A0A0B"),
-                    margin=dict(l=0, r=0, t=0, b=0), height=460,
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No plottable coordinates.")
-
-
-def section_fail2ban():
-    header("Fail2Ban Config Generator", "Build a jail + filter from a sample log line. Deploy on your server.")
-    sample = st.text_input("Sample offending log line", value="Failed password for invalid user admin from 203.0.113.5 port 51022 ssh2")
-    findtime = st.number_input("findtime (seconds)", value=600, step=60)
-    maxretry = st.number_input("maxretry", value=5, min_value=1)
-    bantime = st.number_input("bantime (seconds)", value=3600, step=300)
-
-    # Heuristic regex builder from the sample - extract the IP via common pattern.
-    # This only *generates* a filter; it does not inspect any system.
-    ip_guess = re.search(r"\bfrom (\d{1,3}(?:\.\d{1,3}){3})\b", sample)
-    base = sample
-    if ip_guess:
-        base = sample.replace(ip_guess.group(1), "<HOST>")
-    base = re.escape(base).replace(re.escape("<HOST>"), "<HOST>")
-
-    filt = f"""# /etc/fail2ban/filter.d/cybershield.conf
-[INCLUDES]
-before = common.conf
-
-[Definition]
-failregex = ^.*{base}.*$
-ignoreregex =
-
-# Generated by Sekta Gold Cyber Shield. Review before deploying.
-"""
-
-    jail = f"""# /etc/fail2ban/jail.local
-[cybershield]
-enabled  = true
-filter   = cybershield
-logpath  = /var/log/auth.log
-backend  = systemd
-port     = ssh
-maxretry = {maxretry}
-findtime = {findtime}
-bantime  = {bantime}
-action   = %(action_)s
-"""
-
-    st.markdown("#### Filter (`cybershield.conf`)")
-    st.code(filt, language="ini")
-    download_text("cybershield.conf", filt, "⬇️ Download filter")
-
-    st.markdown("#### Jail (`jail.local` excerpt)")
-    st.code(jail, language="ini")
-    download_text("jail.local", jail, "⬇️ Download jail")
-
-    st.caption("Tip: test with `fail2ban-regex /var/log/auth.log /etc/fail2ban/filter.d/cybershield.conf` before enabling.")
-
-
-def section_waf():
-    header("Cloudflare WAF Rule Builder", "Compose custom firewall expressions. Paste into Cloudflare > Security > WAF > Custom rules.")
-    mode = st.radio("Build mode", ["Block by IP list", "Block by ASN", "Block by country", "Block by path pattern"])
-    expr = ""
-    if mode == "Block by IP list":
-        ips = st.text_area("IPs (CIDR allowed, one per line)", placeholder="203.0.113.5\n198.51.100.0/24")
-        parts = [f'(ip.src eq "{x.strip()}")' for x in ips.splitlines() if x.strip()]
-        expr = " or ".join(parts)
-    elif mode == "Block by ASN":
-        asns = st.text_input("ASNs (comma separated)", placeholder="AS12345, AS67890")
-        parts = [f'(ip.geoip.asnum eq {int(re.sub(r"[^0-9]", "", a))})' for a in asns.split(",") if re.sub(r"[^0-9]", "", a)]
-        expr = " or ".join(parts)
-    elif mode == "Block by country":
-        cc = st.text_input("Country codes (comma separated)", placeholder="CN, RU")
-        parts = [f'(ip.geoip.country eq "{a.strip().upper()}")' for a in cc.split(",") if a.strip()]
-        expr = " or ".join(parts)
-    elif mode == "Block by path pattern":
-        pat = st.text_input("Path pattern (matches.lookup against raw URI)", placeholder="/.env")
-        pat_safe = pat.replace('"', '\\"')
-        expr = f'(http.request.uri.path contains "{pat_safe}")'
-
-    action = st.selectbox("Action", ["Block", "Challenge", "Managed Challenge", "JS Challenge", "Log"])
-    if expr:
-        st.markdown("#### Expression")
-        st.code(expr, language="sql")
-        st.markdown(f"**Action:** `{action}`  — set this in the rule's 'Then take action' dropdown.")
-        st.caption("Review against Cloudflare's expression reference before deploying.")
-
-
-def section_fim():
-    header("File Integrity Monitor", "SHA-256 baselines and change detection.")
-    mode = st.radio("Mode", ["Build baseline", "Compare against baseline"], horizontal=True)
-
-    if mode == "Build baseline":
-        files = st.file_uploader("Upload files to baseline", accept_multiple_files=True)
-        if files:
-            baseline = {}
-            for f in files:
-                data = f.read()
-                baseline[f.name] = {
-                    "sha256": sha256_bytes(data),
-                    "size": len(data),
-                    "baseline_at": utcnow(),
-                }
-            blob = json.dumps(baseline, indent=2)
-            st.code(blob, language="json")
-            download_text("baseline.json", blob, "⬇️ Download baseline.json")
-            st.caption("Store baseline.json securely (e.g., read-only or off-host). Re-run Compare with the same files to detect tampering.")
-    else:
-        baseline_file = st.file_uploader("Upload baseline.json", type=["json"])
-        current_files = st.file_uploader("Upload current files to check", accept_multiple_files=True)
-        if baseline_file and current_files:
-            try:
-                baseline = json.loads(baseline_file.read().decode("utf-8"))
-            except Exception as e:  # noqa: BLE001
-                st.error(f"Could not parse baseline.json: {e}")
-                return
-            findings = []
-            for f in current_files:
-                data = f.read()
-                now_hash = sha256_bytes(data)
-                rec = baseline.get(f.name)
-                if rec is None:
-                    findings.append((f.name, "NEW", "Not in baseline"))
-                elif rec.get("sha256") == now_hash:
-                    findings.append((f.name, "OK", "Matches baseline"))
-                else:
-                    findings.append((f.name, "CHANGED", f"Was {rec.get('sha256','?')[:12]}… now {now_hash[:12]}…"))
-            missing = [n for n in baseline if n not in {f.name for f in current_files}]
-            for n in missing:
-                findings.append((n, "MISSING", "In baseline but not uploaded"))
-            df = pd.DataFrame(findings, columns=["File", "Status", "Detail"])
-            st.dataframe(df, use_container_width=True, hide_index=True)
-
-
-def section_backup():
-    header("Encrypted Backup Generator", "Generate a tar + gpg backup script with retention. Review and deploy on your server.")
-    src = st.text_input("Directory to back up", value="/var/www")
-    dest = st.text_input("Backup destination", value="/backups")
-    keep = st.number_input("Retain last N backups", value=7, min_value=1)
-    gpg_recipient = st.text_input("GPG recipient (-r), optional", placeholder="admin@example.com")
-
-    enc = "gpg --batch --yes --symmetric"  # default symmetric passphrase
-    if gpg_recipient.strip():
-        enc = f"gpg --batch --yes --recipient {gpg_recipient.strip()} --encrypt"
-
-    script = f"""#!/usr/bin/env bash
-# Encrypted backup - DEPLOY ON YOUR SERVER. Requires tar + gpg.
-set -euo pipefail
-SRC="{src}"
-DEST="{dest}"
-KEEP={keep}
-TS="$(date +%Y%m%d-%H%M%S)"
-HOST="$(hostname -s)"
-
-mkdir -p "$DEST"
-OUT="$DEST/${{HOST}}-${{TS}}.tar.gz"
-echo "Backing up $SRC -> $OUT"
-tar -czf - -C "$(dirname "$SRC")" "$(basename "$SRC")" | {enc} > "$OUT.gpg"
-chmod 600 "$OUT.gpg"
-echo "Wrote $OUT.gpg"
-
-# Retention: keep newest $KEEP encrypted backups
-ls -1t "$DEST"/${{HOST}}-*.tar.gz.gpg 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r old; do
-  rm -f "$old"; echo "Pruned $old"
-done
-echo "Done."
-"""
-    st.code(script, language="bash")
-    download_text("backup.sh", script, "⬇️ Download backup.sh")
-    st.caption("Schedule with cron, e.g.: `0 3 * * * /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1`. Symmetric mode will prompt for a passphrase unless you supply it via gpg-agent or a passphrase file.")
-
-
-SSH_FAIL_RE = re.compile(r"Failed password for (?:invalid user )?(?P<user>\S+) from (?P<ip>\d{1,3}(?:\.\d{1,3}){3})")
-SSH_OK_RE = re.compile(r"Accepted (?:password|publickey) for (?P<user>\S+) from (?P<ip>\d{1,3}(?:\.\d{1,3}){3})")
-
-
-def section_authlog():
-    header("auth.log Analyzer", "Detect brute-force SSH attempts. Upload or paste your auth.log (client-side parse only).")
-    src = st.radio("Source", ["Paste text", "Upload file"], horizontal=True)
-    text = ""
-    if src == "Paste text":
-        text = st.text_area("auth.log contents", height=180, placeholder="Jan 1 12:00:00 host sshd[123]: Failed password for invalid user root from 203.0.113.5 port 51022 ssh2")
-    else:
-        up = st.file_uploader("Upload auth.log", type=["log", "txt", ""])
-        if up:
-            text = up.read().decode("utf-8", errors="ignore")
-
-    if not text.strip():
-        st.info("Provide auth.log data to analyze.")
-        return
-
-    failed_by_ip = Counter()
-    failed_by_user = Counter()
-    ok_by_ip = Counter()
-    for line in text.splitlines():
-        m = SSH_FAIL_RE.search(line)
-        if m:
-            failed_by_ip[m.group("ip")] += 1
-            failed_by_user[m.group("user")] += 1
-            continue
-        m2 = SSH_OK_RE.search(line)
-        if m2:
-            ok_by_ip[m2.group("ip")] += 1
-
-    total_fail = sum(failed_by_ip.values())
-    bf_threshold = st.slider("Brute-force threshold (failures/IP)", min_value=3, max_value=100, value=10)
-    brute = {ip: n for ip, n in failed_by_ip.items() if n >= bf_threshold}
-    st.session_state["bf_findings"] = brute  # consumed by the AI Security Advisor
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Failed attempts", total_fail)
-    c2.metric("Unique offending IPs", len(failed_by_ip))
-    c3.metric("Likely brute-force IPs", len(brute))
-
-    if failed_by_ip:
-        st.markdown("### Top offending IPs")
-        top = pd.DataFrame(failed_by_ip.most_common(20), columns=["IP", "Failed attempts"])
-        st.dataframe(top, use_container_width=True, hide_index=True)
-
-    if failed_by_user:
-        st.markdown("### Targeted usernames")
-        st.dataframe(pd.DataFrame(failed_by_user.most_common(15), columns=["Username", "Attempts"]), use_container_width=True, hide_index=True)
-
-    if brute:
-        st.markdown("### 🚩 Brute-force IPs (consider banning)")
-        bf_df = pd.DataFrame(sorted(brute.items(), key=lambda x: -x[1]), columns=["IP", "Failed attempts"])
-        st.dataframe(bf_df, use_container_width=True, hide_index=True)
-        ips = "\n".join(bf_df["IP"].tolist())
-        st.text_area("Copy these to IP Geolocation or Fail2Ban", ips, height=120)
-
-        if st.button("🔔 Send top brute-force summary to Slack", type="primary"):
-            webhook = load_secret("SLACK_WEBHOOK_URL")
-            if not webhook:
-                st.error("Set SLACK_WEBHOOK_URL to enable Slack alerts.")
-            else:
-                msg = f"🛡️ Cyber Shield: {len(brute)} brute-force IP(s) detected.\n" + "\n".join(
-                    f"• {ip} ({n} fails)" for ip, n in sorted(brute.items(), key=lambda x: -x[1])[:15]
-                )
-                ok, detail = send_slack(msg)
-                (st.success if ok else st.error)(detail)
-    else:
-        st.success("No IPs crossed the brute-force threshold.")
-
-
-# --------------------------------------------------------------------------
-# AI SECTIONS
-# --------------------------------------------------------------------------
-ASSISTANT_SYSTEM = (
-    "You are Sekta, a highly capable technical assistant, strong across software engineering, "
-    "data & analytics, security, cloud/infrastructure, research, and writing. Be concise, accurate, "
-    "and practical; use code blocks where helpful. Refuse requests to build offensive/attack tooling "
-    "and steer toward legitimate, defensive use."
-)
-
-SUGGESTIONS = [
-    "Explain OAuth2 vs. session cookies",
-    "Write Python to dedupe a list of dicts by a key",
-    "How do I harden an SSH server?",
-    "Explain this regex: ^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$",
-]
-
-
-def section_ai_assistant():
-    header("AI Assistant", "General-purpose technical assistant — Groq, Gemini, or OpenAI.")
-    provider_name, model = ai_picker()
-
-    if "ai_messages" not in st.session_state:
-        st.session_state["ai_messages"] = []
-
-    tcol1, tcol2, tcol3 = st.columns([1, 2, 3])
-    with tcol1:
-        if st.button("🗑️ Clear chat", use_container_width=True):
-            st.session_state["ai_messages"] = []
-            st.rerun()
-    with tcol2:
-        web_on = st.toggle("🔍 Web search", value=False, key="ai_web",
-                           help="Pull live results (Tavily if key set, else Wikipedia/DuckDuckGo) into the answer")
-    with tcol3:
-        st.caption(f"{AI_PROVIDERS[provider_name]['icon']} {provider_name} · `{model}`")
-
-    for m in st.session_state["ai_messages"]:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
-
-    # Empty-state suggestion chips
-    if not st.session_state["ai_messages"]:
-        for i, s in enumerate(SUGGESTIONS):
-            if st.button(s, key=f"sug_{i}"):
-                st.session_state["pending_prompt"] = s
-                st.rerun()
-
-    prompt = st.chat_input("Ask anything — code, debug, explain, plan, analyze…") or \
-        st.session_state.pop("pending_prompt", None)
-
-    if prompt:
-        st.session_state["ai_messages"].append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        with st.chat_message("assistant"):
-            history = st.session_state["ai_messages"][-20:]
-            msgs = [{"role": "system", "content": ASSISTANT_SYSTEM}] + \
-                [{"role": m["role"], "content": m["content"]} for m in history]
-            sources_md = ""
-            if web_on:
-                with st.spinner("Searching the web…"):
-                    results = web_search(prompt)
-                if results:
-                    ctx = "\n\n".join(f"[{i+1}] {r['title']} ({r['url']}):\n{r['snippet']}"
-                                      for i, r in enumerate(results))
-                    msgs.append({"role": "system", "content":
-                                 "Relevant live web results (cite by number; prefer these for factual claims):\n" + ctx})
-                    sources_md = "\n\n**Sources:**\n" + "\n".join(
-                        f"{i+1}. [{r['title']}]({r['url']})" for i, r in enumerate(results))
-            placeholder = st.empty()
-            collected = []
-            with st.spinner("Thinking…"):
-                for delta in stream_chat(msgs, provider_name, model):
-                    collected.append(delta)
-                    placeholder.markdown("".join(collected))
-            answer = "".join(collected) + sources_md
-            placeholder.markdown(answer or "_(no response)_")
-        st.session_state["ai_messages"].append({"role": "assistant", "content": answer})
-
-
-ADVISOR_SYSTEM = (
-    "You are Sekta Shield, a defensive security analyst. Using the context provided, explain what is "
-    "happening in plain English, assess severity, and recommend ONLY legitimate, DEFENSIVE actions "
-    "(e.g., Fail2Ban bans, Cloudflare WAF rules, patching, hardening, monitoring, isolation). Refuse "
-    "any request that would facilitate attacks, exploitation, or unauthorized access. Use short "
-    "sections: **Summary**, **Risk**, **Recommended actions**."
-)
-
-
-def _advisor_context() -> str:
-    parts = []
-    bf = st.session_state.get("bf_findings")
-    if bf:
-        lines = [f"- {ip} — {n} failed logins" for ip, n in sorted(bf.items(), key=lambda x: -x[1])[:15]]
-        parts.append("Brute-force IPs detected (auth.log Analyzer tab):\n" + "\n".join(lines))
-    geo = st.session_state.get("geo_rows")
-    if geo:
-        lines = [f"- {r.get('IP')} — {r.get('Country')}, {r.get('City')}, {r.get('Org/ISP')}" for r in geo[:15]]
-        parts.append("Geolocated IPs (IP Geolocation tab):\n" + "\n".join(lines))
-    return ("\nContext pulled from this dashboard:\n" + "\n".join(parts) + "\n\n") if parts else ""
-
-
-def section_ai_advisor():
-    header("AI Security Advisor", "Plain-English threat analysis + defensive recommendations.")
-    provider_name, model = ai_picker()
-
-    ctx = _advisor_context()
-    situation = st.text_area(
-        "Describe the situation or paste logs (auth.log lines, IPs, alerts)…",
-        value=ctx, height=170, key="advisor_input",
+    out = df.loc[:, [c for c in cols if c in df.columns]].sort_values(
+        "date_time", ascending=False
+    ).head(limit).copy()
+    out["result"] = out["won"].map({True: "Win", False: "Loss"})
+    out = out.drop(columns=["won"])
+    out["date_time"] = pd.to_datetime(out["date_time"]).dt.strftime("%Y-%m-%d %H:%M")
+    return out
+
+
+if page == "Match Predictor":
+    st.title("🏓 Match Predictor")
+    st.markdown(
+        "Estimate match winner, expected total points, and **first set Over/Under 18.5** from the Setka history."
     )
-    ready = bool(situation.strip()) and ai_key_ok(provider_name)
-    if st.button("Analyze", type="primary", disabled=not ready):
-        msgs = [{"role": "system", "content": ADVISOR_SYSTEM}, {"role": "user", "content": situation}]
-        with st.chat_message("assistant"):
-            placeholder = st.empty()
-            out = []
-            with st.spinner("Analyzing…"):
-                for delta in stream_chat(msgs, provider_name, model, temperature=0.2):
-                    out.append(delta)
-                    placeholder.markdown("".join(out))
-            placeholder.markdown("".join(out) or "_(no response)_")
+
+    c1, c2, c3, c4 = st.columns([2.2, 2.2, 1.25, 1.25])
+    with c1:
+        player_a = st.selectbox("Player A", players_by_elo, index=0)
+    with c2:
+        default_b = 1 if len(players_by_elo) > 1 else 0
+        player_b = st.selectbox("Player B", players_by_elo, index=default_b)
+    with c3:
+        first_set_line = st.number_input(
+            "1st set line", min_value=10.5, max_value=35.5, value=18.5, step=0.5
+        )
+    with c4:
+        total_points_line = st.number_input(
+            "Total points line", min_value=30.5, max_value=140.5, value=75.5, step=0.5
+        )
+
+    if player_a == player_b:
+        st.error("Choose two different players.")
+        st.stop()
+
+    pred = predict_match(
+        player_a,
+        player_b,
+        player_stats,
+        matches,
+        global_stats,
+        first_set_line=first_set_line,
+        total_points_line=total_points_line,
+    )
 
     st.divider()
-    st.markdown("### ⚙️ AI-generated hardening configs")
-    bf = st.session_state.get("bf_findings") or {}
-    geo = st.session_state.get("geo_rows") or []
-    ipset = sorted(set(list(bf.keys()) + [
-        r.get("IP") for r in geo if r.get("IP") and not str(r.get("IP")).startswith("(")]))
-    if not ipset:
-        st.info("No attacker IPs in this session yet. Run the **📜 auth.log Analyzer** or "
-                "**🌍 IP Geolocation** tab first, then return here to auto-generate bans.")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Predicted winner", pred["predicted_winner"])
+    m2.metric(f"{player_a} win chance", format_percent(pred["player_a_win_probability"]))
+    m3.metric(
+        f"1st set Over {first_set_line}",
+        format_percent(pred["first_set_over_probability"]),
+    )
+    m4.metric("Confidence", pred["confidence"], help="Based on player sample size, Elo availability, recent data, and H2H sample.")
+
+    r1, r2 = st.columns([1.05, 1])
+    with r1:
+        st.plotly_chart(probability_bar(pred), use_container_width=True)
+    with r2:
+        st.plotly_chart(
+            over_under_bar(
+                f"1st set O/U {first_set_line}",
+                pred["first_set_over_probability"],
+                pred["first_set_under_probability"],
+            ),
+            use_container_width=True,
+        )
+
+    line_cols = st.columns(4)
+    line_cols[0].metric("Expected 1st-set points", format_number(pred["expected_first_set_points"], 2))
+    line_cols[1].metric("Expected total points", format_number(pred["expected_total_points"], 2))
+    line_cols[2].metric(
+        f"Total Over {total_points_line}",
+        format_percent(pred["total_points_over_probability"]),
+    )
+    line_cols[3].metric(
+        f"Total Under {total_points_line}",
+        format_percent(pred["total_points_under_probability"]),
+    )
+
+    with st.expander("Why this prediction?", expanded=True):
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Elo difference", f"{pred['elo_diff']:+.1f}")
+        d2.metric("Elo-only chance", format_percent(pred["elo_probability"]))
+        d3.metric("H2H matches", f"{pred['h2h_matches']}")
+        d4.metric(
+            f"{player_a} H2H wins",
+            f"{pred['h2h_player_a_wins']} / {pred['h2h_matches']}",
+        )
+        st.dataframe(comparison_table(player_stats, player_a, player_b), use_container_width=True)
+        st.caption(
+            "This is an analytical estimate, not a guarantee or financial advice. Use your own judgement."
+        )
+
+    st.subheader("Recent head-to-head matches")
+    if pred["h2h_table"].empty:
+        st.info("No direct head-to-head matches found in the uploaded history.")
     else:
-        st.caption("Targeting: " + ", ".join(f"`{ip}`" for ip in ipset[:20]) +
-                   (" …" if len(ipset) > 20 else ""))
-        if st.button("Generate Fail2Ban + Cloudflare WAF config", type="primary",
-                     disabled=not ai_key_ok(provider_name)):
-            fix_user = (
-                "Generate ready-to-paste DEFENSIVE hardening artifacts for these attacker source IPs:\n"
-                + ", ".join(ipset) + "\n\n"
-                "Produce exactly two fenced code blocks:\n"
-                "1) A Fail2Ban jail.local entry plus a filter failregex that bans these source IPs.\n"
-                "2) A Cloudflare WAF custom-rule expression that blocks these IPs.\n"
-                "Add a one-line explanation before each block. Hardening only; nothing offensive."
-            )
-            msgs = [{"role": "system", "content":
-                     "You are a defensive security engineer. Output only legitimate hardening "
-                     "configuration. Refuse any offensive request."},
-                    {"role": "user", "content": fix_user}]
-            cfg = []
-            with st.chat_message("assistant"):
-                ph = st.empty()
-                with st.spinner("Generating configs…"):
-                    for delta in stream_chat(msgs, provider_name, model, temperature=0.1):
-                        cfg.append(delta)
-                        ph.markdown("".join(cfg))
-                text = "".join(cfg)
-                ph.markdown(text or "_(no response)_")
-                if text:
-                    st.download_button("⬇️ Download ai_hardening_configs.txt",
-                                       text.encode("utf-8"), file_name="ai_hardening_configs.txt")
+        st.dataframe(h2h_display_table(pred["h2h_table"]), use_container_width=True)
 
 
-# --------------------------------------------------------------------------
-# NAV
-# --------------------------------------------------------------------------
-NAV = {
-    "📊 Overview": section_overview,
-    "🔔 Slack Alerts": section_alerts,
-    "🍯 Honeypot Canaries": section_honeypot,
-    "🤖 AI Security Advisor": section_ai_advisor,
-    "🌍 IP Geolocation": section_geo,
-    "🚫 Fail2Ban Builder": section_fail2ban,
-    "☁️ Cloudflare WAF": section_waf,
-    "🔍 File Integrity": section_fim,
-    "💾 Encrypted Backup": section_backup,
-    "📜 auth.log Analyzer": section_authlog,
-    "💬 AI Assistant": section_ai_assistant,
-}
+elif page == "ML Lab":
+    st.title("🤖 ML Lab — scikit-learn / XGBoost")
+    st.markdown(
+        "Train machine-learning models for match winner, match total points, and first-set Over/Under 18.5."
+    )
+
+    if ML_IMPORT_ERROR is not None:
+        st.error(f"ML dependencies could not be imported: {ML_IMPORT_ERROR}")
+        st.info("Run `pip install -r requirements.txt` and restart the app.")
+        st.stop()
+
+    st.info(
+        "The ML pipeline uses chronological pre-match features to reduce future leakage: rolling Elo, player form, point totals, first-set trends, and H2H history."
+    )
+
+    c1, c2, c3 = st.columns([1.4, 1.4, 1])
+    with c1:
+        algorithm = st.selectbox(
+            "Algorithm",
+            ["auto", "xgboost", "sklearn"],
+            help="auto uses XGBoost when installed, otherwise scikit-learn HistGradientBoosting.",
+        )
+    with c2:
+        row_cap_label = st.selectbox(
+            "Training size",
+            ["Quick: latest 50k rows", "Balanced: latest 120k rows", "Full: all rows"],
+            index=1,
+            help="Rows are orientation rows; each match creates two rows. Full data is most complete but slower.",
+        )
+        row_cap_map = {
+            "Quick: latest 50k rows": 50_000,
+            "Balanced: latest 120k rows": 120_000,
+            "Full: all rows": None,
+        }
+        max_training_rows = row_cap_map[row_cap_label]
+    with c3:
+        st.metric("Available ML rows", f"{len(matches) * 2:,}")
+
+    b1, b2, b3 = st.columns([1, 1, 2])
+    with b1:
+        train_clicked = st.button("Train model", type="primary")
+    with b2:
+        load_clicked = st.button("Load saved model")
+    with b3:
+        if MODEL_BUNDLE_PATH.exists():
+            st.caption(f"Saved bundle found: `{MODEL_BUNDLE_PATH}`")
+        else:
+            st.caption("No saved model bundle yet. Train one here or run `python scripts/train_models.py`.")
+
+    if load_clicked:
+        if MODEL_BUNDLE_PATH.exists():
+            st.session_state["ml_bundle"] = load_model_bundle(MODEL_BUNDLE_PATH)
+            st.success("Loaded saved ML bundle.")
+        else:
+            st.warning("No saved model bundle found yet.")
+
+    if train_clicked:
+        try:
+            st.session_state["ml_bundle"] = train_ml_cached(algorithm, max_training_rows)
+            st.success("ML training complete.")
+        except Exception as exc:
+            st.exception(exc)
+            st.stop()
+
+    bundle = st.session_state.get("ml_bundle")
+    if not bundle:
+        st.stop()
+
+    st.divider()
+    meta_cols = st.columns(5)
+    meta_cols[0].metric("Algorithm", bundle["algorithm"])
+    meta_cols[1].metric("Rows used", f"{bundle['rows_used_for_training']:,}")
+    meta_cols[2].metric("Train rows", f"{bundle['train_rows']:,}")
+    meta_cols[3].metric("Test rows", f"{bundle['test_rows']:,}")
+    meta_cols[4].metric("Models", "4")
+
+    st.subheader("Holdout metrics")
+    st.dataframe(metrics_table(bundle), use_container_width=True)
+
+    with st.expander("Save / reuse this model", expanded=False):
+        st.write("Save the trained bundle locally so the app can load it next time.")
+        if st.button("Save model bundle to models/setka_ml_bundle.joblib"):
+            saved_path = save_model_bundle(bundle, MODEL_BUNDLE_PATH)
+            st.success(f"Saved: {saved_path}")
+        st.code("python scripts/train_models.py --algorithm auto --output models/setka_ml_bundle.joblib", language="bash")
+
+    st.subheader("ML prediction")
+    p1, p2, p3, p4 = st.columns([2.2, 2.2, 1.25, 1.25])
+    with p1:
+        ml_player_a = st.selectbox("Player A", players_by_elo, index=0, key="ml_a")
+    with p2:
+        ml_player_b = st.selectbox("Player B", players_by_elo, index=1 if len(players_by_elo) > 1 else 0, key="ml_b")
+    with p3:
+        ml_first_line = st.number_input("1st set line", min_value=10.5, max_value=35.5, value=18.5, step=0.5, key="ml_first_line")
+    with p4:
+        ml_total_line = st.number_input("Total points line", min_value=30.5, max_value=140.5, value=75.5, step=0.5, key="ml_total_line")
+
+    if ml_player_a == ml_player_b:
+        st.error("Choose two different players.")
+        st.stop()
+
+    ml_pred = predict_with_bundle(
+        bundle,
+        ml_player_a,
+        ml_player_b,
+        first_set_line=ml_first_line,
+        total_points_line=ml_total_line,
+    )
+    rule_pred = predict_match(
+        ml_player_a,
+        ml_player_b,
+        player_stats,
+        matches,
+        global_stats,
+        first_set_line=ml_first_line,
+        total_points_line=ml_total_line,
+    )
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("ML predicted winner", ml_pred["predicted_winner"])
+    m2.metric(f"{ml_player_a} ML win chance", format_percent(ml_pred["player_a_win_probability"]))
+    m3.metric(f"ML 1st set Over {ml_first_line}", format_percent(ml_pred["first_set_over_probability"]))
+    m4.metric("ML expected total", format_number(ml_pred["expected_total_points"], 2))
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.plotly_chart(probability_bar(ml_pred), use_container_width=True)
+    with c2:
+        st.plotly_chart(
+            over_under_bar(
+                f"ML first set O/U {ml_first_line}",
+                ml_pred["first_set_over_probability"],
+                ml_pred["first_set_under_probability"],
+            ),
+            use_container_width=True,
+        )
+
+    compare_df = pd.DataFrame(
+        [
+            {
+                "model": "ML",
+                "predicted_winner": ml_pred["predicted_winner"],
+                f"{ml_player_a}_win_probability": ml_pred["player_a_win_probability"],
+                "expected_total_points": ml_pred["expected_total_points"],
+                "total_over_probability": ml_pred["total_points_over_probability"],
+                "expected_first_set_points": ml_pred["expected_first_set_points"],
+                "first_set_over_probability": ml_pred["first_set_over_probability"],
+            },
+            {
+                "model": "Rule blend",
+                "predicted_winner": rule_pred["predicted_winner"],
+                f"{ml_player_a}_win_probability": rule_pred["player_a_win_probability"],
+                "expected_total_points": rule_pred["expected_total_points"],
+                "total_over_probability": rule_pred["total_points_over_probability"],
+                "expected_first_set_points": rule_pred["expected_first_set_points"],
+                "first_set_over_probability": rule_pred["first_set_over_probability"],
+            },
+        ]
+    )
+    st.subheader("ML vs rule-blend comparison")
+    st.dataframe(compare_df, use_container_width=True)
+    st.caption("ML estimates are based on historical patterns only. They are not betting advice or guaranteed outcomes.")
 
 
-def main():
-    with st.sidebar:
-        st.markdown("### 🛡️ Cyber Shield")
-        st.caption("Defensive operations console")
-        choice = st.radio("Tool", list(NAV.keys()), label_visibility="collapsed")
-        st.divider()
-        st.caption("Defensive-only · no offensive capability")
-        st.caption(f"UTC {utcnow()}")
-    NAV[choice]()
+elif page == "Data Sources":
+    st.title("🧭 Data Sources & Research Registry")
+    st.markdown(
+        "A structured registry of the live-score, odds, table-tennis, ML, training, GitHub, and research resources you listed."
+    )
+
+    if ODDS_IMPORT_ERROR is not None:
+        st.error(f"Source registry dependencies could not be imported: {ODDS_IMPORT_ERROR}")
+        st.stop()
+
+    st.warning(
+        "Compliance note: the app does not blindly scrape websites. Use official APIs, licensed feeds, permitted exports, or manual imports."
+    )
+
+    s1, s2 = st.columns([1, 2])
+    with s1:
+        selected_category = st.selectbox("Category", ["All"] + source_categories())
+    with s2:
+        st.caption(
+            "Status tells you whether the source is already wired into the app, available as a scaffold, or kept as a research/manual-reference link."
+        )
+
+    st.subheader("Summary")
+    st.dataframe(summary_by_category(), use_container_width=True)
+
+    st.subheader("Sources")
+    source_df = registry_dataframe(selected_category)
+    st.dataframe(
+        source_df,
+        use_container_width=True,
+        height=620,
+        column_config={
+            "url": st.column_config.LinkColumn("url"),
+        },
+    )
+
+    with st.expander("Secrets for API integrations", expanded=False):
+        st.code(
+            """THE_ODDS_API_KEY="..."
+PINNACLE_USERNAME="..."
+PINNACLE_PASSWORD="..."
+BETFAIR_APP_KEY="..."
+BETFAIR_SESSION_TOKEN="...""",
+            language="bash",
+        )
+
+    with st.expander("Recommended next build steps", expanded=False):
+        st.markdown(
+            """
+1. Add your GitHub repo URL so the project can be pushed.
+2. Add The Odds API key and discover the exact table-tennis sport key available to your account.
+3. If you have Pinnacle/Betfair access, wire the approved endpoints into `src/external_clients.py`.
+4. Add a canonical player-name mapping table for matching odds/live-score names to Setka CSV names.
+5. Backtest predictions against historical odds before relying on any edge calculation.
+            """
+        )
 
 
-if __name__ == "__main__":
-    main()
+elif page == "Leaderboard":
+    st.title("🏆 Leaderboard")
+    st.markdown("Search and rank players by Elo, matches, win rate, form, and point-total profile.")
+
+    fc1, fc2, fc3 = st.columns([2, 1, 1])
+    with fc1:
+        search = st.text_input("Search player", placeholder="Type part of a player name...")
+    with fc2:
+        min_matches = st.number_input("Minimum history matches", min_value=0, value=0, step=10)
+    with fc3:
+        sort_by = st.selectbox(
+            "Sort by",
+            ["elo", "matches", "win_rate", "recent_win_rate", "avg_total_points", "first_set_over_18_5_rate"],
+        )
+
+    df = player_stats.copy()
+    if search:
+        df = df[df["player"].str.contains(search, case=False, na=False)]
+    df = df[df["matches"] >= min_matches]
+    df = df.sort_values(sort_by, ascending=False)
+
+    show_cols = [
+        "player",
+        "elo",
+        "matches",
+        "wins",
+        "losses",
+        "win_rate",
+        "recent_win_rate",
+        "avg_total_points",
+        "avg_first_set_total",
+        "first_set_over_18_5_rate",
+        "last_played",
+    ]
+    st.dataframe(df[show_cols], use_container_width=True, height=600)
+    st.download_button(
+        "Download filtered leaderboard CSV",
+        data=df[show_cols].to_csv(index=False).encode("utf-8"),
+        file_name="setka_filtered_leaderboard.csv",
+        mime="text/csv",
+    )
+
+
+elif page == "Player Explorer":
+    st.title("🔎 Player Explorer")
+    player = st.selectbox("Choose player", players_alpha)
+    row = player_stats.loc[player_stats["player"] == player].iloc[0]
+    log = player_log.loc[player_log["player"] == player].copy().sort_values("date_time")
+
+    st.subheader(player)
+    p1, p2, p3, p4, p5 = st.columns(5)
+    p1.metric("Elo", f"{row['elo']:.1f}")
+    p2.metric("Matches", f"{int(row['matches']):,}")
+    p3.metric("Win rate", format_percent(row["win_rate"]))
+    p4.metric("Recent win rate", format_percent(row["recent_win_rate"]))
+    p5.metric("1st set O18.5 rate", format_percent(row["first_set_over_18_5_rate"]))
+
+    if log.empty:
+        st.info("No match history for this player in the uploaded match file.")
+        st.stop()
+
+    chart_df = log[["date_time", "won", "total_points", "first_set_total", "point_diff"]].copy()
+    chart_df["rolling_win_rate_20"] = chart_df["won"].rolling(20, min_periods=3).mean()
+    chart_df["match_number"] = range(1, len(chart_df) + 1)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        fig = px.line(
+            chart_df,
+            x="date_time",
+            y="rolling_win_rate_20",
+            title="Rolling win rate / last 20 matches",
+            labels={"rolling_win_rate_20": "Rolling win rate", "date_time": "Date"},
+        )
+        fig.update_yaxes(tickformat=".0%", range=[0, 1])
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        fig = px.histogram(
+            chart_df,
+            x="total_points",
+            nbins=35,
+            title="Match total points distribution",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    c3, c4 = st.columns(2)
+    with c3:
+        fig = px.histogram(
+            chart_df,
+            x="first_set_total",
+            nbins=25,
+            title="First-set points distribution",
+        )
+        fig.add_vline(x=18.5, line_dash="dash", line_color="#F97316")
+        st.plotly_chart(fig, use_container_width=True)
+    with c4:
+        recent_opponents = (
+            log.groupby("opponent")
+            .agg(matches=("won", "size"), wins=("won", "sum"), avg_total_points=("total_points", "mean"))
+            .reset_index()
+        )
+        recent_opponents["win_rate"] = recent_opponents["wins"] / recent_opponents["matches"]
+        recent_opponents = recent_opponents.sort_values("matches", ascending=False).head(15)
+        fig = px.bar(
+            recent_opponents,
+            x="matches",
+            y="opponent",
+            orientation="h",
+            title="Most common opponents",
+            hover_data=["wins", "win_rate", "avg_total_points"],
+        )
+        fig.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Latest matches")
+    st.dataframe(player_latest_table(log), use_container_width=True)
+
+
+elif page == "Head-to-Head":
+    st.title("⚔️ Head-to-Head")
+    c1, c2 = st.columns(2)
+    with c1:
+        player_a = st.selectbox("Player A", players_alpha, index=0, key="h2h_a")
+    with c2:
+        player_b = st.selectbox("Player B", players_alpha, index=1 if len(players_alpha) > 1 else 0, key="h2h_b")
+
+    if player_a == player_b:
+        st.error("Choose two different players.")
+        st.stop()
+
+    summary, h2h_rows = get_head_to_head(matches, player_a, player_b)
+
+    h1, h2, h3, h4, h5 = st.columns(5)
+    h1.metric("H2H matches", f"{summary['matches']}")
+    h2.metric(f"{player_a} wins", f"{summary['player_a_wins']}")
+    h3.metric(f"{player_b} wins", f"{summary['player_b_wins']}")
+    h4.metric("Avg total points", format_number(summary["avg_total_points"], 2))
+    h5.metric("1st set O18.5", format_percent(summary["first_set_over_18_5_rate"]))
+
+    if h2h_rows.empty:
+        st.info("No direct H2H matches found for these players.")
+    else:
+        chart = h2h_rows.sort_values("date_time").copy()
+        chart["player_a_cum_wins"] = chart["selected_player_won"].cumsum()
+        chart["match_no"] = range(1, len(chart) + 1)
+        fig = px.line(
+            chart,
+            x="match_no",
+            y="player_a_cum_wins",
+            title=f"Cumulative H2H wins for {player_a}",
+            labels={"match_no": "H2H match number", "player_a_cum_wins": "Cumulative wins"},
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(h2h_display_table(h2h_rows, limit=100), use_container_width=True)
+
+
+elif page == "Live Odds":
+    st.title("📡 Live Odds + Setka Links")
+    st.markdown(
+        "Connect The Odds API when you add an API key, and use the official Setka Cup site for schedules/results."
+    )
+
+    if ODDS_IMPORT_ERROR is not None:
+        st.error(f"Odds/API dependencies could not be imported: {ODDS_IMPORT_ERROR}")
+        st.info("Run `pip install -r requirements.txt` and restart the app.")
+        st.stop()
+
+    st.subheader("Official Setka Cup")
+    oc1, oc2, oc3 = st.columns([1.3, 1, 2])
+    with oc1:
+        st.link_button("Open Setka Cup official site", OFFICIAL_SETKA_URL)
+    with oc2:
+        check_site = st.button("Check site status")
+    with oc3:
+        st.caption(
+            "The official Setka website can be dynamic. This app checks availability; plug in an official feed/API here if you have one."
+        )
+    if check_site:
+        status = fetch_official_site_status()
+        st.json(status_as_dict(status))
+
+    st.divider()
+    st.subheader("The Odds API")
+
+    secret_key = None
+    try:
+        secret_key = st.secrets.get("THE_ODDS_API_KEY")
+    except Exception:
+        secret_key = None
+    env_key = os.getenv("THE_ODDS_API_KEY")
+    entered_key = st.text_input(
+        "The Odds API key for this session",
+        type="password",
+        value="",
+        help="Leave blank to use THE_ODDS_API_KEY from environment or Streamlit secrets.",
+    )
+    api_key = entered_key or env_key or secret_key
+
+    if not api_key:
+        st.warning("No Odds API key found yet.")
+        st.write("Add it locally as an environment variable:")
+        st.code("export THE_ODDS_API_KEY='your_api_key_here'\nstreamlit run app.py", language="bash")
+        st.write("Or in Streamlit Cloud secrets:")
+        st.code('THE_ODDS_API_KEY = "your_api_key_here"', language="toml")
+        st.info("The code is already built; live odds will work after you add the key.")
+    else:
+        st.success("API key detected for this session.")
+
+    with st.expander("Discover sport keys", expanded=False):
+        all_sports = st.checkbox("Include inactive sports", value=False)
+        if st.button("List sports from The Odds API"):
+            if not api_key:
+                st.error("Add an API key first.")
+            else:
+                try:
+                    sports_df, quota = list_sports(api_key, all_sports=all_sports)
+                    st.caption(f"Quota headers: {quota}")
+                    st.dataframe(sports_df, use_container_width=True, height=420)
+                except OddsAPIError as exc:
+                    st.error(str(exc))
+
+    st.markdown("### Fetch odds")
+    f1, f2, f3, f4 = st.columns([1.5, 1.2, 1.4, 1])
+    with f1:
+        sport_key = st.text_input(
+            "Sport key",
+            value="table_tennis",
+            help="Use 'List sports' to find the exact key available to your account.",
+        )
+    with f2:
+        regions = st.text_input("Regions", value="eu,uk,us")
+    with f3:
+        markets = st.text_input("Markets", value="h2h,totals")
+    with f4:
+        odds_format = st.selectbox("Odds format", ["decimal", "american"], index=0)
+
+    if st.button("Fetch odds"):
+        if not api_key:
+            st.error("Add an API key first.")
+        else:
+            try:
+                events, quota = fetch_odds(
+                    api_key,
+                    sport_key=sport_key,
+                    regions=regions,
+                    markets=markets,
+                    odds_format=odds_format,
+                )
+                flat = normalize_odds_events(events)
+                flat = add_implied_probabilities(flat, odds_format=odds_format)
+                st.caption(f"Quota headers: {quota}")
+                st.metric("Events returned", f"{len(events):,}")
+                if flat.empty:
+                    st.info("No odds rows returned for this sport/region/market combination.")
+                else:
+                    st.dataframe(flat, use_container_width=True, height=520)
+                    st.download_button(
+                        "Download odds CSV",
+                        data=flat.to_csv(index=False).encode("utf-8"),
+                        file_name=f"odds_{sport_key}.csv",
+                        mime="text/csv",
+                    )
+            except OddsAPIError as exc:
+                st.error(str(exc))
+                st.info(
+                    "If the sport key is invalid or unavailable, use 'List sports' to find the exact key. Some accounts/plans may not include table tennis or Setka markets."
+                )
+
+    with st.expander("How to compare odds with app predictions", expanded=False):
+        st.markdown(
+            """
+1. Fetch odds for the correct table-tennis sport key and markets.
+2. Match the event player names to the names in this dataset.
+3. Use Match Predictor or ML Lab to estimate probabilities.
+4. Compare model probability to bookmaker implied probability. For decimal odds, implied probability is `1 / price` before bookmaker margin removal.
+            """
+        )
+
+
+elif page == "Data Health":
+    st.title("🧪 Data Health")
+    st.markdown("Quick checks on the uploaded files and parsed scoring data.")
+
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("Match rows", f"{len(matches):,}")
+    g2.metric("Players", f"{player_stats['player'].nunique():,}")
+    g3.metric("Avg total points", format_number(global_stats["total_points_mean"], 2))
+    g4.metric("Avg 1st-set points", format_number(global_stats["first_set_mean"], 2))
+
+    c1, c2 = st.columns(2)
+    with c1:
+        set_counts = matches["sets_played"].value_counts().sort_index().reset_index()
+        set_counts.columns = ["sets_played", "matches"]
+        fig = px.bar(set_counts, x="sets_played", y="matches", title="Matches by number of sets")
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        fig = px.histogram(matches, x="first_set_total", nbins=35, title="First-set total distribution")
+        fig.add_vline(x=18.5, line_dash="dash", line_color="#F97316")
+        st.plotly_chart(fig, use_container_width=True)
+
+    c3, c4 = st.columns(2)
+    with c3:
+        top_comp = matches["competition"].value_counts().head(20).reset_index()
+        top_comp.columns = ["competition", "matches"]
+        fig = px.bar(top_comp, x="matches", y="competition", orientation="h", title="Top competitions")
+        fig.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig, use_container_width=True)
+    with c4:
+        missing = matches.isna().sum().reset_index()
+        missing.columns = ["column", "missing_values"]
+        st.dataframe(missing, use_container_width=True)
+
+    st.subheader("Raw match sample")
+    sample_cols = [
+        "date_time",
+        "competition",
+        "player1",
+        "player2",
+        "winner",
+        "set_scores",
+        "total_points",
+        "first_set_total",
+        "sets_played",
+    ]
+    st.dataframe(matches[sample_cols].head(100), use_container_width=True)

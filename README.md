@@ -1,75 +1,250 @@
-# 🛡️ SEKTA GOLD — Cyber Shield
+# Setka Prediction App
 
-A **defensive security operations dashboard** built with Streamlit. It generates
-detection, alerting, and hardening artifacts for your own servers and edge.
+Interactive Streamlit app for Setka Cup/table-tennis analysis, built from the uploaded Setka match-history CSV and leaderboard CSV.
 
-> 🟢 **Defensive-only.** This dashboard performs **no scanning, exploitation, or
-> attack** against any system. It builds configs and analyzes logs you provide.
+It includes:
 
----
+- transparent rule-blend prediction
+- optional scikit-learn/XGBoost ML training
+- live odds/API integration scaffolds
+- a data-source/research registry for the resources collected during planning
 
-## What it does
+## Main features
 
-| Tool | Purpose |
-|------|---------|
-| 🔔 **Slack Alerts** | Central notifier — test/verify your webhook before relying on it. |
-| 🍯 **Honeypot Canaries** | Generate decoy files + a host monitor script (`inotifywait`) that alerts Slack when a canary is touched. |
-| 🌍 **IP Geolocation** | Enrich attacker IPs via [ipapi.co](https://ipapi.co) (city/country/ASN) and plot them on a world map. |
-| 🚫 **Fail2Ban Builder** | Generate `jail.local` + a filter regex from a sample log line. |
-| ☁️ **Cloudflare WAF** | Compose custom firewall expressions (block by IP / ASN / country / path). |
-| 🔍 **File Integrity** | SHA-256 baselines + change detection for important files. |
-| 💾 **Encrypted Backup** | Generate a `tar` + `gpg` backup script with a retention policy. |
-| 📜 **auth.log Analyzer** | Detect brute-force SSH attempts and rank offending IPs; send a Slack summary. |
-| 🤖 **AI Security Advisor** | LLM reads your dashboard context (brute-force IPs, geolocations) and writes plain-English analysis + defensive recommendations. |
-| 💬 **AI Assistant** | General-purpose technical chat — strong across coding, research, writing, data — via Groq / Gemini / OpenAI. Toggle **🔍 Web search** to inject live results (Tavily if keyed, else Wikipedia/DuckDuckGo) with citations. |
+### Match Predictor
 
-**Architecture note:** the Streamlit app is a *generator + dashboard*. It never
-runs subprocess commands on the host it runs on. Scripts it produces (canary
-monitor, backup, Fail2Ban configs) are plain text that **you** read, review, and
-deploy on your own server.
+- Match winner probability
+- Expected total points
+- Total-points Over/Under probability
+- First-set Over/Under probability, default line **18.5**
+- Head-to-head summary
+- Player comparison table
 
----
+### ML Lab
 
-## Setup
+Train four models from the historical match data:
+
+1. Match winner classifier
+2. First-set Over 18.5 classifier
+3. Total-points regressor
+4. First-set-points regressor
+
+The ML pipeline uses chronological pre-match features:
+
+- rolling Elo
+- career win rate
+- recent form
+- first-set win tendency
+- first-set Over 18.5 tendency
+- point-difference history
+- total-points history
+- direct H2H history
+
+The app can use:
+
+- `xgboost` if installed and selected
+- scikit-learn `HistGradientBoosting` fallback
+
+### Live Odds page
+
+Prepared integration for [The Odds API](https://the-odds-api.com/):
+
+- list available sports for your API key
+- fetch odds for a chosen sport key
+- flatten bookmaker/market/outcome odds into a table
+- calculate implied probabilities for decimal or American odds
+- export odds to CSV
+
+Additional scaffold clients are included for:
+
+- Pinnacle API
+- Betfair API-NG
+
+No API key is included. Add your own key through environment variables or Streamlit secrets.
+
+### Data Sources page
+
+The app includes a structured source registry for the links you provided:
+
+- live scores and match history: Flashscore, SofaScore, LiveScore.in, BetExplorer, Scorebing
+- betting odds: The Odds API, Pinnacle, Betfair
+- table-tennis data: ITTF, World Table Tennis, TableTennis.Guide, Ratings Central
+- ML: scikit-learn, PyTorch, TensorFlow, XGBoost, LightGBM, CatBoost, Optuna, SHAP
+- analysis: NumPy, Pandas, SciPy, Plotly
+- training: Colab, Kaggle
+- GitHub/research discovery links
+
+Compliance note: the app does **not** blindly scrape websites. Use official APIs, licensed feeds, permitted exports, or manual imports.
+
+### Setka Cup official link
+
+Includes the official Setka Cup website link:
+
+- <https://tabletennis.setkacup.com/en/>
+
+The app currently performs a lightweight availability/status check only. If you obtain an official Setka API/feed or have permission to scrape structured data, plug it into `src/setka_live.py`.
+
+### Colab notebook
+
+A Google Colab starter notebook is included:
+
+```text
+notebooks/Setka_ML_Training_Colab.ipynb
+```
+
+Use it to train models in Colab, download a `.joblib` model bundle, then place it in `models/`.
+
+## Project structure
+
+```text
+Sekta-gold-cup/
+├── app.py
+├── requirements.txt
+├── requirements-optional.txt
+├── requirements-deep-learning.txt
+├── README.md
+├── .gitignore
+├── .streamlit/
+│   ├── config.toml
+│   └── secrets.toml.example
+├── data/
+│   ├── Setka_June_2025_to_Now.csv
+│   └── setka_leaderboard.csv
+├── docs/
+│   ├── DATA_SOURCES.md
+│   └── ML_ROADMAP.md
+├── models/
+│   └── .gitkeep
+├── notebooks/
+│   └── Setka_ML_Training_Colab.ipynb
+├── scripts/
+│   ├── train_models.py
+│   └── tune_winner_model.py
+└── src/
+    ├── __init__.py
+    ├── explainability.py
+    ├── external_clients.py
+    ├── ml_pipeline.py
+    ├── odds_api.py
+    ├── setka_core.py
+    ├── setka_live.py
+    └── source_registry.py
+```
+
+## Data currently included
+
+- `data/Setka_June_2025_to_Now.csv`
+  - 155,715 matches
+  - date range: 2025-06-01 to 2026-07-24
+  - score strings parsed into total points, first-set points, sets played, etc.
+- `data/setka_leaderboard.csv`
+  - leaderboard rows with Elo and match counts
+
+## Run locally
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Python 3.11+. Dependencies (`streamlit`, `pandas`, `plotly`, `httpx`) are all
-listed in `requirements.txt`.
+## Add API keys
 
-## Secrets
+### Environment variables
 
-Put sensitive values in `.streamlit/secrets.toml` (see
-`.streamlit/secrets.toml.example`), or as environment variables / in `.env`.
+```bash
+export THE_ODDS_API_KEY="your_api_key_here"
+export PINNACLE_USERNAME="your_username"
+export PINNACLE_PASSWORD="your_password"
+export BETFAIR_APP_KEY="your_app_key"
+export BETFAIR_SESSION_TOKEN="your_session_token"
+streamlit run app.py
+```
 
-| Key | Required | Notes |
-|-----|----------|-------|
-| `SLACK_WEBHOOK_URL` | For alerting | Create at https://api.slack.com/messaging/webhooks |
-| `IPAPI_KEY` | Optional | Higher ipapi.co limits; free tier works without it |
-| `GROQ_API_KEY` | For AI (any one) | Free: console.groq.com/keys |
-| `GEMINI_API_KEY` | For AI (any one) | Free: aistudio.google.com/apikey |
-| `OPENAI_API_KEY` | For AI (any one) | Paid: platform.openai.com/api-keys |
-| `TAVILY_API_KEY` | Optional | Higher-quality web search in the AI Assistant; works without it via Wikipedia/DuckDuckGo |
+### Streamlit secrets
 
-Webhook URLs are masked in the UI and never hardcoded. The AI tabs work with
-**any one** provider key; blank ones are skipped gracefully. Web search works
-**without any key** (Wikipedia + DuckDuckGo Instant Answer); add a Tavily key
-to upgrade to AI-optimized results.
+Copy:
 
-## Deploy
+```text
+.streamlit/secrets.toml.example
+```
 
-See [`DEPLOY_STREAMLIT.md`](DEPLOY_STREAMLIT.md) for Streamlit Cloud. The app
-redeploys automatically when `main` is updated. Add your secrets under
-**Streamlit Cloud → App settings → Secrets**.
+to:
 
----
+```text
+.streamlit/secrets.toml
+```
 
-## Safety & scope
+Then set your keys. `secrets.toml` is ignored by Git and should not be committed.
 
-This project is strictly defensive. It contains no offensive tooling and is
-intended for protecting systems you own or are authorized to harden. See
-[`SECURITY.md`](SECURITY.md).
+## Train ML models from command line
+
+Quick training with the latest 50,000 orientation rows:
+
+```bash
+python scripts/train_models.py --algorithm auto --max-training-rows 50000
+```
+
+Full training:
+
+```bash
+python scripts/train_models.py --algorithm auto --max-training-rows 0
+```
+
+Save path defaults to:
+
+```text
+models/setka_ml_bundle.joblib
+```
+
+Model artifacts are ignored by Git because they can be regenerated.
+
+## Optional ML tools
+
+Install optional ML/research libraries:
+
+```bash
+pip install -r requirements-optional.txt
+```
+
+Tune the winner model with Optuna:
+
+```bash
+python scripts/tune_winner_model.py --algorithm sklearn --trials 50 --max-training-rows 50000
+```
+
+Heavy deep-learning frameworks are separated:
+
+```bash
+pip install -r requirements-deep-learning.txt
+```
+
+Recommended: install deep-learning frameworks only in Colab/Kaggle or a machine with enough disk/RAM.
+
+## Use Google Colab
+
+1. Push this project to GitHub.
+2. Open `notebooks/Setka_ML_Training_Colab.ipynb` in Colab.
+3. Change `REPO_URL` to your GitHub repo URL.
+4. Run the notebook.
+5. Download the trained `setka_ml_bundle.joblib` artifact if needed.
+
+## More documentation
+
+- `docs/DATA_SOURCES.md` — integration plan and source registry
+- `docs/ML_ROADMAP.md` — ML tools, tuning, explainability, deployment notes
+
+## Deploy to Streamlit
+
+This repository is ready for Streamlit Community Cloud:
+
+- main file path: `app.py`
+- dependencies: `requirements.txt`
+- optional secrets: see `.streamlit/secrets.toml.example`
+
+See [`DEPLOY_STREAMLIT.md`](DEPLOY_STREAMLIT.md) for deployment steps.
+
+## Important disclaimer
+
+This app provides analytical estimates from historical data. It is **not** a guarantee, betting advice, or financial advice. Always validate and backtest before using predictions for real decisions.
