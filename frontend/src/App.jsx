@@ -362,27 +362,19 @@ export default function App() {
           <div className="max-w-[760px] mx-auto w-full py-6">
             {messages.length === 0 && !isStreaming && (
               <div className="relative text-center py-16 md:py-20 overflow-hidden">
-                {/* ambient glow backdrop */}
+                {/* soft ambient glow backdrop, Claude-style calm */}
                 <div className="pointer-events-none absolute inset-0 -z-10 flex items-start justify-center">
-                  <div className="w-[560px] h-[560px] rounded-full bg-[#FFC700]/10 blur-[120px]" />
+                  <div className="w-[520px] h-[420px] rounded-full bg-[#FFC700]/8 blur-[110px]" />
                 </div>
 
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#141415] border border-[#232325] text-[11px] font-mono text-[#FFC700] mb-6">
-                  <span className="w-1.5 h-1.5 bg-[#FFC700] rounded-full animate-pulse" /> 8 SUPER AGENTS · ONE CHAT
-                </div>
+                <span className="block text-[26px] text-[#FFC700] mb-3">✦</span>
 
-                <h1 className="text-[40px] md:text-[56px] leading-[1.05] font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-b from-white to-zinc-400">
-                  Experience the
+                <h1 className="font-serif text-[30px] md:text-[36px] leading-[1.25] font-medium tracking-tight text-[#F2EEE4]">
+                  How can Sekta Gold help you today?
                 </h1>
-                <h1 className="text-[40px] md:text-[56px] leading-[1.05] font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-[#FFC700] via-[#FFE066] to-[#FF8A00] mt-0.5">
-                  gold standard
-                </h1>
-                <p className="text-zinc-400 mt-4 text-[15px] max-w-[480px] mx-auto">
-                  One box. Code, research, design, data, and more — powered by {selectedAgent.name.toLowerCase()} and 7 other specialists.
-                </p>
 
-                {/* Arena-style quick action chips */}
-                <div className="flex flex-wrap items-center justify-center gap-2 mt-8 max-w-[680px] mx-auto">
+                {/* Composer-adjacent quick prompt, Claude-style pill row ("mode tabs") */}
+                <div className="flex flex-wrap items-center justify-center gap-2 mt-7 max-w-[620px] mx-auto">
                   {[
                     { icon: '🎨', label: 'Create a landing page', prompt: 'Create a sleek, modern landing page for my product with a hero section, features grid, and pricing', agent: 'creative-god' },
                     { icon: '📊', label: 'Build a dashboard', prompt: 'Turn this data into an interactive dashboard with charts', agent: 'data-wizard' },
@@ -399,12 +391,16 @@ export default function App() {
                         setInput(c.prompt)
                         textareaRef.current?.focus()
                       }}
-                      className="group flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-[#141415] border border-[#232325] hover:border-[#FFC700]/40 hover:bg-[#1A1A1C] text-[13px] text-zinc-300 hover:text-white transition"
+                      className="group flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-transparent border border-[#232325] hover:border-[#FFC700]/40 hover:bg-[#141415] text-[13px] text-zinc-300 hover:text-white transition"
                     >
                       <span className="text-[14px]">{c.icon}</span> {c.label}
                     </button>
                   ))}
                 </div>
+
+                <p className="text-zinc-500 mt-6 text-[13px] max-w-[440px] mx-auto">
+                  Powered by {selectedAgent.name.toLowerCase()} and 7 other specialists — code, research, design, data, and more, all in one box.
+                </p>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-6 text-left max-w-[560px] mx-auto">
                   {[

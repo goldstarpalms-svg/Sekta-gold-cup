@@ -89,22 +89,20 @@ footer { visibility: hidden; }
 .tag-bad   { color: #f87171; font-weight: 600; }
 .defensive-banner { background: #14201a; border: 1px solid #1f3a2b; border-radius: 10px; padding: 10px 14px; color: #86efac; font-size: 13px; }
 
-/* --- Landing hero --- */
-.hero-wrap { position: relative; text-align: center; padding: 48px 12px 28px; overflow: hidden; }
-.hero-glow { position: absolute; top: -120px; left: 50%; transform: translateX(-50%);
-             width: 620px; height: 460px; background: radial-gradient(closest-side, rgba(255,199,0,0.16), transparent 70%);
+/* --- Landing hero (Claude.ai-inspired: calm, serif, sparkle accent) --- */
+.hero-wrap { position: relative; text-align: center; padding: 56px 12px 24px; overflow: hidden; }
+.hero-glow { position: absolute; top: -140px; left: 50%; transform: translateX(-50%);
+             width: 520px; height: 420px; background: radial-gradient(closest-side, rgba(255,199,0,0.10), transparent 70%);
              filter: blur(10px); pointer-events: none; z-index: 0; }
-.hero-pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px;
-             background: #141415; border: 1px solid #232325; color: #FFC700; font-family: 'JetBrains Mono', monospace;
-             font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; position: relative; z-index: 1; }
-.hero-dot { width: 6px; height: 6px; border-radius: 50%; background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,0.8); }
-.hero-title { font-size: 44px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.08; margin: 18px 0 0;
-              background: linear-gradient(180deg, #ffffff 0%, #a3a3a3 100%); -webkit-background-clip: text;
-              background-clip: text; color: transparent; position: relative; z-index: 1; }
-.hero-title.gold { background: linear-gradient(90deg, #FFC700 0%, #FFE066 45%, #FF8A00 100%);
-                    -webkit-background-clip: text; background-clip: text; color: transparent; margin-top: 2px; }
-.hero-sub { color: #9ca3af; font-size: 15px; max-width: 560px; margin: 14px auto 0; position: relative; z-index: 1; }
+.hero-spark { font-size: 26px; color: #FFC700; position: relative; z-index: 1; display: block; margin-bottom: 10px; }
+.hero-title-serif { font-family: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Times New Roman', serif;
+             font-weight: 500; font-size: 36px; letter-spacing: -0.01em; line-height: 1.2;
+             color: #F2EEE4; position: relative; z-index: 1; }
+.hero-sub { color: #9ca3af; font-size: 15px; max-width: 520px; margin: 14px auto 0; position: relative; z-index: 1; }
 .chip-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 26px; position: relative; z-index: 1; }
+
+/* Pill-shaped buttons, Claude "mode tab" style */
+.stButton > button { border-radius: 999px !important; font-weight: 500; border: 1px solid #232325; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -382,15 +380,14 @@ def section_overview():
     slack_on = bool(load_secret("SLACK_WEBHOOK_URL"))
     ipapi_key = bool(load_secret("IPAPI_KEY"))
 
-    # ---- Hero -------------------------------------------------------
+    # ---- Hero (Claude.ai-inspired: calm greeting, serif, sparkle) ----
     st.markdown(
         """
         <div class="hero-wrap">
           <div class="hero-glow"></div>
-          <div class="hero-pill"><span class="hero-dot"></span> DEFENSIVE OPS · LIVE</div>
-          <div class="hero-title">Experience the</div>
-          <div class="hero-title gold">gold standard&nbsp;of defense</div>
-          <div class="hero-sub">One console to alert, detect, and harden — canaries, WAF rules,
+          <span class="hero-spark">✦</span>
+          <div class="hero-title-serif">How can Cyber Shield help you defend today?</div>
+          <div class="hero-sub">Alert, detect, and harden — canaries, WAF rules,
           Fail2Ban configs, and an AI advisor that reads your own dashboard data.</div>
         </div>
         """,
