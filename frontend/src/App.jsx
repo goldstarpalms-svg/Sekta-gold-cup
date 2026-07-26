@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
+import LandingPage from './LandingPage'
+
 
 const AGENTS_FALLBACK = [
   { id: 'sekta-omni', name: 'SEKTA GOLD OMNI', icon: '🏆', description: 'Ultimate - better than all bots combined' },
@@ -82,7 +84,11 @@ function MarkdownLite({ content }) {
 }
 
 export default function App() {
+  const [entered, setEntered] = useState(() => {
+    try { return sessionStorage.getItem('sekta_entered') === '1' } catch { return false }
+  })
   const [agents, setAgents] = useState(AGENTS_FALLBACK)
+
   const [selectedAgent, setSelectedAgent] = useState(AGENTS_FALLBACK[0])
   const [chats, setChats] = useState([])
   const [currentChatId, setCurrentChatId] = useState(null)
@@ -279,19 +285,28 @@ export default function App() {
       handleSend()
     }
   }
-  
+
+  const enterApp = () => {
+    try { sessionStorage.setItem('sekta_entered', '1') } catch {}
+    setEntered(true)
+  }
+
+  if (!entered) {
+    return <LandingPage onEnter={enterApp} />
+  }
+
   return (
     <div className="flex h-screen bg-[#0A0A0B] text-white overflow-hidden">
       {/* SIDEBAR */}
       <div className="w-[300px] bg-[#0F0F10] border-r border-[#232325] flex flex-col hidden md:flex">
         <div className="p-4 border-b border-[#232325]">
-          <div className="flex items-center gap-3">
+          <button onClick={() => setEntered(false)} className="flex items-center gap-3 text-left hover:opacity-80 transition">
             <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#FFC700] to-[#FF8A00] flex items-center justify-center text-black font-bold">S</div>
             <div>
               <div className="font-bold tracking-tight">SEKTA GOLD</div>
               <div className="text-[11px] text-[#8A8A90] -mt-1">ULTIMATE • v2.0</div>
             </div>
-          </div>
+          </button>
           <button onClick={createNewChat} className="mt-4 w-full bg-white text-black rounded-lg py-2.5 text-sm font-semibold hover:bg-zinc-100 transition flex items-center justify-center gap-2">
             <span className="text-lg leading-none">+</span> New Chat
           </button>

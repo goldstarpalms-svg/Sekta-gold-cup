@@ -89,24 +89,60 @@ footer { visibility: hidden; }
 .tag-bad   { color: #f87171; font-weight: 600; }
 .defensive-banner { background: #14201a; border: 1px solid #1f3a2b; border-radius: 10px; padding: 10px 14px; color: #86efac; font-size: 13px; }
 
-/* --- Landing hero (Claude.ai-inspired: calm, serif, sparkle accent) --- */
-.hero-wrap { position: relative; text-align: center; padding: 56px 12px 24px; overflow: hidden; }
-.hero-glow { position: absolute; top: -140px; left: 50%; transform: translateX(-50%);
-             width: 520px; height: 420px; background: radial-gradient(closest-side, rgba(255,199,0,0.10), transparent 70%);
-             filter: blur(10px); pointer-events: none; z-index: 0; }
-.hero-spark { font-size: 26px; color: #FFC700; position: relative; z-index: 1; display: block; margin-bottom: 10px; }
-.hero-title-serif { font-family: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Times New Roman', serif;
-             font-weight: 500; font-size: 36px; letter-spacing: -0.01em; line-height: 1.2;
-             color: #F2EEE4; position: relative; z-index: 1; }
-.hero-sub { color: #9ca3af; font-size: 15px; max-width: 520px; margin: 14px auto 0; position: relative; z-index: 1; }
-.chip-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 26px; position: relative; z-index: 1; }
+/* --- Landing hero (rich, animated) --- */
+@keyframes floatA { 0%,100% { transform: translate(-50%,0); } 50% { transform: translate(-50%,18px); } }
+@keyframes floatB { 0%,100% { transform: translate(0,0); } 50% { transform: translate(24px,-16px); } }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes pulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-/* Pill-shaped buttons, Claude "mode tab" style */
+.hero-wrap { position: relative; text-align: center; padding: 56px 12px 20px; overflow: hidden; }
+.hero-glow { position: absolute; top: -140px; left: 50%; transform: translateX(-50%);
+             width: 640px; height: 460px; background: radial-gradient(closest-side, rgba(255,199,0,0.16), transparent 70%);
+             filter: blur(10px); pointer-events: none; z-index: 0; animation: floatA 10s ease-in-out infinite; }
+.hero-glow-2 { position: absolute; top: 40px; right: 8%; width: 260px; height: 260px;
+             background: radial-gradient(closest-side, rgba(255,138,0,0.14), transparent 70%);
+             filter: blur(14px); pointer-events: none; z-index: 0; animation: floatB 13s ease-in-out infinite; }
+.hero-pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px;
+             background: #141415; border: 1px solid #232325; color: #FFC700; font-family: 'JetBrains Mono', monospace;
+             font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; position: relative; z-index: 1;
+             animation: fadeUp 0.6s ease-out; }
+.hero-dot { width: 6px; height: 6px; border-radius: 50%; background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,0.8);
+            animation: pulseDot 1.6s ease-in-out infinite; display: inline-block; }
+.hero-title { font-size: 46px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.08; margin: 18px 0 0;
+              background: linear-gradient(180deg, #ffffff 0%, #a3a3a3 100%); -webkit-background-clip: text;
+              background-clip: text; color: transparent; position: relative; z-index: 1;
+              animation: fadeUp 0.7s ease-out 0.05s both; }
+.hero-title.gold { background: linear-gradient(90deg, #FFC700 0%, #FFE066 45%, #FF8A00 100%);
+                    -webkit-background-clip: text; background-clip: text; color: transparent; margin-top: 2px;
+                    animation: fadeUp 0.7s ease-out 0.12s both; }
+.hero-sub { color: #9ca3af; font-size: 15px; max-width: 560px; margin: 16px auto 0; position: relative; z-index: 1;
+            animation: fadeUp 0.7s ease-out 0.2s both; }
+
+/* stat cards */
+.stat-card { background: linear-gradient(180deg,#141415,#0F0F10); border: 1px solid #1f1f22; border-radius: 16px;
+             padding: 18px 10px; text-align: center; animation: fadeUp 0.6s ease-out both; }
+.stat-num { font-size: 26px; font-weight: 800; background: linear-gradient(90deg,#FFC700,#FF8A00);
+            -webkit-background-clip: text; background-clip: text; color: transparent; }
+.stat-label { font-size: 11px; color: #8A8A90; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; font-family: 'JetBrains Mono', monospace; }
+
+/* feature / tool cards */
+.feat-card { background: #101011; border: 1px solid #1c1c1e; border-radius: 16px; padding: 18px;
+             height: 100%; transition: border-color .2s, transform .2s; }
+.feat-card:hover { border-color: rgba(255,199,0,0.35); transform: translateY(-3px); }
+.feat-icon { font-size: 24px; margin-bottom: 8px; display: block; }
+.feat-title { font-weight: 700; font-size: 13px; color: #fff; }
+.feat-desc { font-size: 12px; color: #9ca3af; margin-top: 4px; line-height: 1.5; }
+.section-kicker { color: #FFC700; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.12em;
+                   text-transform: uppercase; text-align: center; margin-top: 6px; }
+.section-title { text-align: center; font-size: 26px; font-weight: 800; letter-spacing: -0.01em; margin: 6px 0 26px; color: #fff; }
+
+.chip-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 26px; position: relative; z-index: 1; }
 .stButton > button { border-radius: 999px !important; font-weight: 500; border: 1px solid #232325; }
 </style>
 """,
     unsafe_allow_html=True,
 )
+
 
 
 # --------------------------------------------------------------------------
@@ -380,20 +416,23 @@ def section_overview():
     slack_on = bool(load_secret("SLACK_WEBHOOK_URL"))
     ipapi_key = bool(load_secret("IPAPI_KEY"))
 
-    # ---- Hero (Claude.ai-inspired: calm greeting, serif, sparkle) ----
+    # ---- Hero (animated, richer) ----
     st.markdown(
         """
         <div class="hero-wrap">
           <div class="hero-glow"></div>
-          <span class="hero-spark">✦</span>
-          <div class="hero-title-serif">How can Cyber Shield help you defend today?</div>
-          <div class="hero-sub">Alert, detect, and harden — canaries, WAF rules,
-          Fail2Ban configs, and an AI advisor that reads your own dashboard data.</div>
+          <div class="hero-glow-2"></div>
+          <div class="hero-pill"><span class="hero-dot"></span> DEFENSIVE OPS · LIVE</div>
+          <div class="hero-title">Experience the</div>
+          <div class="hero-title gold">gold standard&nbsp;of defense</div>
+          <div class="hero-sub">One console to alert, detect, and harden — canaries, WAF rules,
+          Fail2Ban configs, IP threat intel, and an AI advisor that reads your own dashboard data.</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+    # ---- Quick nav chips ----
     chips = [
         ("🔔", "Test Slack alerts", "🔔 Slack Alerts"),
         ("🍯", "Deploy a honeypot", "🍯 Honeypot Canaries"),
@@ -410,8 +449,28 @@ def section_overview():
                 st.session_state["nav_radio"] = target
                 st.rerun()
 
-    header("Operations Overview", "Status of integrations and quick navigation.")
+    # ---- Stats row ----
+    st.markdown("<br>", unsafe_allow_html=True)
+    stats = [
+        ("10", "Defensive tools"),
+        ("3", "AI providers supported"),
+        ("0", "Offensive capability"),
+        ("100%", "Text you review before deploy"),
+    ]
+    scols = st.columns(4)
+    for col, (num, label) in zip(scols, stats):
+        with col:
+            st.markdown(
+                f'<div class="stat-card"><div class="stat-num">{num}</div>'
+                f'<div class="stat-label">{label}</div></div>',
+                unsafe_allow_html=True,
+            )
 
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="defensive-banner">🟢 <b>Defensive-only.</b> This dashboard generates detection, alerting, and hardening artifacts. It performs no scanning, exploitation, or attack against any system.</div>', unsafe_allow_html=True)
+
+    # ---- Status cards ----
+    st.markdown("<br>", unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         kv_card("Slack Alerting", "ON" if slack_on else "OFF", mask_secret(load_secret("SLACK_WEBHOOK_URL")))
@@ -422,22 +481,35 @@ def section_overview():
     with c4:
         kv_card("Local Time", utcnow().split(" ")[1], "UTC")
 
-    st.markdown('<div class="defensive-banner">🟢 <b>Defensive-only.</b> This dashboard generates detection, alerting, and hardening artifacts. It performs no scanning, exploitation, or attack against any system.</div>', unsafe_allow_html=True)
+    # ---- Feature showcase grid ----
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="section-kicker">Every tool, built in</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">A full blue-team toolkit, one dashboard</div>', unsafe_allow_html=True)
 
-    st.markdown("### What each tool does")
-    rows = [
-        ("Slack Alerts", "Central notifier - test and verify your webhook before relying on it."),
-        ("Honeypot Canaries", "Generate decoy files + a host monitor script that alerts Slack when touched."),
-        ("IP Geolocation", "Enrich attacker IPs with city/country/ASN and plot them on a world map."),
-        ("Fail2Ban Builder", "Generate jail.local + filter regex from a sample log line."),
-        ("Cloudflare WAF", "Compose firewall expressions (block by IP/ASN/country/path)."),
-        ("File Integrity", "SHA-256 baselines and change detection for important files."),
-        ("Encrypted Backup", "Generate a tar + gpg backup script with retention policy."),
-        ("auth.log Analyzer", "Detect brute-force SSH patterns and rank offending IPs."),
-        ("AI Security Advisor", "LLM explains threats + recommends defensive actions from your dashboard data."),
-        ("AI Assistant", "General-purpose technical chat with optional live web search — Groq, Gemini, or OpenAI."),
+    features = [
+        ("🔔", "Slack Alerts", "Central notifier - test and verify your webhook before relying on it."),
+        ("🍯", "Honeypot Canaries", "Generate decoy files + a host monitor script that alerts Slack when touched."),
+        ("🌍", "IP Geolocation", "Enrich attacker IPs with city/country/ASN and plot them on a world map."),
+        ("🚫", "Fail2Ban Builder", "Generate jail.local + filter regex from a sample log line."),
+        ("☁️", "Cloudflare WAF", "Compose firewall expressions (block by IP/ASN/country/path)."),
+        ("🔍", "File Integrity", "SHA-256 baselines and change detection for important files."),
+        ("💾", "Encrypted Backup", "Generate a tar + gpg backup script with retention policy."),
+        ("📜", "auth.log Analyzer", "Detect brute-force SSH patterns and rank offending IPs."),
+        ("🤖", "AI Security Advisor", "LLM explains threats + recommends defensive actions from your dashboard data."),
+        ("💬", "AI Assistant", "General-purpose technical chat with optional live web search — Groq, Gemini, or OpenAI."),
     ]
-    st.table(pd.DataFrame(rows, columns=["Tool", "Purpose"]))
+    for row_start in range(0, len(features), 5):
+        row = features[row_start:row_start + 5]
+        fcols = st.columns(5)
+        for col, (icon, title, desc) in zip(fcols, row):
+            with col:
+                st.markdown(
+                    f'<div class="feat-card"><span class="feat-icon">{icon}</span>'
+                    f'<div class="feat-title">{title}</div>'
+                    f'<div class="feat-desc">{desc}</div></div>',
+                    unsafe_allow_html=True,
+                )
+        st.markdown("<br>", unsafe_allow_html=True)
 
 
 def section_alerts():

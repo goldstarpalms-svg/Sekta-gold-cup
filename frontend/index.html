@@ -30,6 +30,15 @@
       ::-webkit-scrollbar-thumb{background:#333;border-radius:10px}
       .gold-glow{box-shadow:0 0 40px rgba(255,199,0,0.15),0 0 80px rgba(255,199,0,0.05)}
       .prose pre{white-space:pre-wrap}
+
+      /* Landing page ambient blobs */
+      .blob { position: absolute; border-radius: 9999px; filter: blur(90px); opacity: 0.55; }
+      .blob-a { width: 480px; height: 480px; top: -160px; left: -120px; background: radial-gradient(circle, rgba(255,199,0,0.28), transparent 70%); animation: float-a 16s ease-in-out infinite; }
+      .blob-b { width: 420px; height: 420px; top: 300px; right: -140px; background: radial-gradient(circle, rgba(255,138,0,0.20), transparent 70%); animation: float-b 20s ease-in-out infinite; }
+      .blob-c { width: 380px; height: 380px; bottom: -140px; left: 30%; background: radial-gradient(circle, rgba(255,224,102,0.16), transparent 70%); animation: float-c 24s ease-in-out infinite; }
+      @keyframes float-a { 0%,100% { transform: translate(0,0); } 50% { transform: translate(40px,60px); } }
+      @keyframes float-b { 0%,100% { transform: translate(0,0); } 50% { transform: translate(-50px,-40px); } }
+      @keyframes float-c { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(30px,-30px) scale(1.08); } }
     </style>
   </head>
   <body class="bg-[#0A0A0B] text-white antialiased overflow-hidden">
