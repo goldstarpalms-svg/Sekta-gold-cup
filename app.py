@@ -88,6 +88,23 @@ footer { visibility: hidden; }
 .tag-warn  { color: #fbbf24; font-weight: 600; }
 .tag-bad   { color: #f87171; font-weight: 600; }
 .defensive-banner { background: #14201a; border: 1px solid #1f3a2b; border-radius: 10px; padding: 10px 14px; color: #86efac; font-size: 13px; }
+
+/* --- Landing hero --- */
+.hero-wrap { position: relative; text-align: center; padding: 48px 12px 28px; overflow: hidden; }
+.hero-glow { position: absolute; top: -120px; left: 50%; transform: translateX(-50%);
+             width: 620px; height: 460px; background: radial-gradient(closest-side, rgba(255,199,0,0.16), transparent 70%);
+             filter: blur(10px); pointer-events: none; z-index: 0; }
+.hero-pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px;
+             background: #141415; border: 1px solid #232325; color: #FFC700; font-family: 'JetBrains Mono', monospace;
+             font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; position: relative; z-index: 1; }
+.hero-dot { width: 6px; height: 6px; border-radius: 50%; background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,0.8); }
+.hero-title { font-size: 44px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.08; margin: 18px 0 0;
+              background: linear-gradient(180deg, #ffffff 0%, #a3a3a3 100%); -webkit-background-clip: text;
+              background-clip: text; color: transparent; position: relative; z-index: 1; }
+.hero-title.gold { background: linear-gradient(90deg, #FFC700 0%, #FFE066 45%, #FF8A00 100%);
+                    -webkit-background-clip: text; background-clip: text; color: transparent; margin-top: 2px; }
+.hero-sub { color: #9ca3af; font-size: 15px; max-width: 560px; margin: 14px auto 0; position: relative; z-index: 1; }
+.chip-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 26px; position: relative; z-index: 1; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -362,10 +379,41 @@ def header(title: str, subtitle: str):
 
 
 def section_overview():
-    header("Operations Overview", "Status of integrations and quick navigation.")
-
     slack_on = bool(load_secret("SLACK_WEBHOOK_URL"))
     ipapi_key = bool(load_secret("IPAPI_KEY"))
+
+    # ---- Hero -------------------------------------------------------
+    st.markdown(
+        """
+        <div class="hero-wrap">
+          <div class="hero-glow"></div>
+          <div class="hero-pill"><span class="hero-dot"></span> DEFENSIVE OPS · LIVE</div>
+          <div class="hero-title">Experience the</div>
+          <div class="hero-title gold">gold standard&nbsp;of defense</div>
+          <div class="hero-sub">One console to alert, detect, and harden — canaries, WAF rules,
+          Fail2Ban configs, and an AI advisor that reads your own dashboard data.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    chips = [
+        ("🔔", "Test Slack alerts", "🔔 Slack Alerts"),
+        ("🍯", "Deploy a honeypot", "🍯 Honeypot Canaries"),
+        ("🌍", "Geolocate an IP", "🌍 IP Geolocation"),
+        ("🚫", "Build a Fail2Ban jail", "🚫 Fail2Ban Builder"),
+        ("☁️", "Write a WAF rule", "☁️ Cloudflare WAF"),
+        ("📜", "Analyze auth.log", "📜 auth.log Analyzer"),
+        ("💬", "Ask the AI Assistant", "💬 AI Assistant"),
+    ]
+    cols = st.columns(len(chips))
+    for col, (icon, label, target) in zip(cols, chips):
+        with col:
+            if st.button(f"{icon} {label}", key=f"chip_{target}", use_container_width=True):
+                st.session_state["nav_radio"] = target
+                st.rerun()
+
+    header("Operations Overview", "Status of integrations and quick navigation.")
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -957,10 +1005,11 @@ NAV = {
 
 
 def main():
+    nav_keys = list(NAV.keys())
     with st.sidebar:
         st.markdown("### 🛡️ Cyber Shield")
         st.caption("Defensive operations console")
-        choice = st.radio("Tool", list(NAV.keys()), label_visibility="collapsed")
+        choice = st.radio("Tool", nav_keys, label_visibility="collapsed", key="nav_radio")
         st.divider()
         st.caption("Defensive-only · no offensive capability")
         st.caption(f"UTC {utcnow()}")
