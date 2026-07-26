@@ -1,67 +1,68 @@
-"""
-SEKTA GOLD - Cyber Shield
-=========================
+from __future__ import annotations
 
-A defensive security operations dashboard. DEFENSIVE USE ONLY - no offensive
-tooling, scanning, exploitation, or attack capability is included or intended.
-
-What it does (each is a standard blue-team control):
-  * Slack alerting              - central notifier used by the other tools
-  * Honeypot canary generator   - decoy files + a monitor script that alerts
-                                  on access (host-side, you deploy it)
-  * IP geolocation & threat map - enrich attacker IPs via ipapi.co
-  * Fail2Ban config generator   - build jail + filter rules from log patterns
-  * Cloudflare WAF rule builder - compose firewall expressions
-  * File integrity monitor      - SHA-256 baselines + change detection
-  * Encrypted backup generator  - tar + gpg backup script with retention
-  * auth.log analyzer           - detect brute-force SSH attempts
-  * AI security advisor         - LLM explains threats + recommends defensive
-                                  actions (reads your dashboard context)
-  * AI assistant                - general-purpose technical chat via Groq /
-                                  Gemini / OpenAI (OpenAI-compatible API)
-
-Design notes:
-  * The Streamlit app is a GENERATOR + DASHBOARD. It never runs subprocess
-    commands on the host. Scripts it produces are plain text that you read,
-    review, and deploy on your own server.
-  * Secrets (Slack webhook URL, ipapi key) are read from
-    st.secrets / environment variables, never hardcoded, and masked in the UI.
-"""
-
-import os
-import re
 import io
-import json
-import time
-import base64
-import hashlib
-import zipfile
+import os
 from datetime import datetime, timezone
-from collections import Counter, defaultdict
-from urllib.parse import quote
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import streamlit as st
 
 try:
-    import httpx  # already in requirements.txt
-    _HAS_HTTPX = True
-except Exception:  # pragma: no cover - optional fallback
-    _HAS_HTTPX = False
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:
+    pass
 
 try:
-    import plotly.express as px  # already in requirements.txt
-    _HAS_PLOTLY = True
-except Exception:  # pragma: no cover
-    _HAS_PLOTLY = False
+    import httpx
+except Exception:  # pragma: no cover - optional at runtime
+    httpx = None
 
 
-# --------------------------------------------------------------------------
-# PAGE CONFIG
-# --------------------------------------------------------------------------
+APP_NAME = "SEKTA GOLD AI"
+APP_VERSION = "Chatbot Dashboard v2"
+DEFAULT_SYSTEM_PROMPT = """
+You are SEKTA GOLD AI, a premium AI chatbot inside a Streamlit dashboard.
+Help with writing, coding, business, research, analysis, planning, documents, and everyday questions.
+Be direct, practical, friendly, and useful. If uploaded files or web results are provided, use them as context.
+If you do not know something, say so and suggest the best next step.
+""".strip()
+
+PROVIDERS: dict[str, dict[str, str]] = {
+    "groq": {
+        "label": "Groq",
+        "secret": "GROQ_API_KEY",
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": "llama-3.3-70b-versatile",
+    },
+    "openai": {
+        "label": "OpenAI",
+        "secret": "OPENAI_API_KEY",
+        "base_url": "",
+        "model": "gpt-4o-mini",
+    },
+    "gemini": {
+        "label": "Gemini",
+        "secret": "GEMINI_API_KEY",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "model": "gemini-1.5-flash",
+    },
+}
+
+SAMPLE_PROMPTS = [
+    "Create a professional business plan for my idea.",
+    "Review this text and make it sound more premium.",
+    "Explain this code and improve it.",
+    "Give me a step-by-step marketing strategy.",
+]
+
+
 st.set_page_config(
-    page_title="Sekta Gold - Cyber Shield",
-    page_icon="🛡️",
+    page_title="SEKTA GOLD AI Chatbot",
+    page_icon="⚜️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -69,903 +70,579 @@ st.set_page_config(
 st.markdown(
     """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
-html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif; }
-.stApp { background: #0A0A0B; color: #E5E5E5; }
-[data-testid="stSidebar"] { background: #0A0A0B; border-right: 1px solid #1f1f22; }
-[data-testid="stHeader"] { background: rgba(10,10,11,0.85); backdrop-filter: blur(12px); }
-h1, h2, h3 { color: #fff; letter-spacing: -0.02em; }
-.kicker { color: #FFC700; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; font-size: 12px; }
-.card { background: #141415; border: 1px solid #1f1f22; border-radius: 14px; padding: 18px; }
-.mono { font-family: 'JetBrains Mono', monospace; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+:root {
+  --gold: #FFC700;
+  --gold-2: #E8A900;
+  --bg: #050506;
+  --panel: rgba(17, 17, 20, 0.82);
+  --panel-2: rgba(255, 199, 0, 0.08);
+  --line: rgba(255, 199, 0, 0.22);
+  --muted: #A8A8AF;
+}
+
+html, body, [class*="css"] { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+.stApp {
+  color: #F7F7F8;
+  background:
+    radial-gradient(circle at 10% 8%, rgba(255, 199, 0, 0.22), transparent 28%),
+    radial-gradient(circle at 88% 18%, rgba(232, 169, 0, 0.12), transparent 28%),
+    linear-gradient(135deg, #050506 0%, #08080A 48%, #11100A 100%);
+}
+[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #050506 0%, #0E0E10 100%);
+  border-right: 1px solid var(--line);
+}
+[data-testid="stHeader"] { background: rgba(5,5,6,0.72); backdrop-filter: blur(18px); }
+.block-container { padding-top: 1.4rem; max-width: 1420px; }
+h1, h2, h3 { color: white; letter-spacing: -0.04em; }
+a { color: var(--gold) !important; }
 code, pre { font-family: 'JetBrains Mono', monospace !important; }
-.stButton > button { border-radius: 10px; font-weight: 500; }
-a { color: #FFC700 !important; }
+
+.top-shell {
+  border: 1px solid rgba(255,199,0,0.30);
+  border-radius: 30px;
+  padding: 30px;
+  background:
+    linear-gradient(135deg, rgba(255,199,0,0.18), rgba(255,199,0,0.04) 34%, rgba(11,11,13,0.86)),
+    radial-gradient(circle at 92% 18%, rgba(255,199,0,0.16), transparent 32%);
+  box-shadow: 0 24px 90px rgba(0,0,0,0.42);
+  margin-bottom: 18px;
+}
+.logo-row { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.logo-mark {
+  width: 46px; height: 46px; border-radius: 16px;
+  display:flex; align-items:center; justify-content:center;
+  background: linear-gradient(135deg, #FFC700, #8A6200);
+  color:#050506; font-size:26px; font-weight:900;
+  box-shadow: 0 12px 34px rgba(255,199,0,0.22);
+}
+.kicker { color: var(--gold); font-weight: 900; font-size: 12px; letter-spacing: 0.20em; text-transform: uppercase; }
+.hero-title { font-size: clamp(38px, 6vw, 76px); line-height: 0.92; font-weight: 900; margin: 0; }
+.hero-subtitle { color: #D5D5D8; font-size: 18px; max-width: 860px; margin-top: 14px; }
+.gold-gradient {
+  background: linear-gradient(90deg, #FFF4B0 0%, #FFC700 42%, #B98200 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.status-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 18px 0; }
+.status-card {
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(15,15,18,0.70);
+  border-radius: 20px;
+  padding: 16px;
+}
+.status-card b { display:block; font-size: 22px; color:#fff; margin-top:6px; }
+.status-card span { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; }
+
+.prompt-card {
+  border: 1px solid rgba(255,199,0,0.20);
+  background: rgba(255,199,0,0.055);
+  border-radius: 18px;
+  padding: 14px 16px;
+  min-height: 92px;
+}
+.prompt-card h4 { margin: 0 0 7px 0; color: #fff; }
+.prompt-card p { color: #BEBEC5; margin: 0; font-size: 13px; }
+
+.chat-frame {
+  border: 1px solid rgba(255,199,0,0.18);
+  border-radius: 26px;
+  padding: 18px;
+  background: rgba(7,7,9,0.58);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+[data-testid="stChatMessage"] {
+  border: 1px solid rgba(255,255,255,0.09);
+  background: rgba(18,18,22,0.74);
+  border-radius: 20px;
+  padding: 10px;
+}
+.stButton > button, .stDownloadButton > button {
+  border-radius: 14px;
+  font-weight: 800;
+  border: 1px solid rgba(255,199,0,0.26);
+}
+.stButton > button:hover, .stDownloadButton > button:hover {
+  border-color: rgba(255,199,0,0.70);
+  color: var(--gold);
+}
+.small-note { color: var(--muted); font-size: 13px; }
+.sidebar-title { font-size: 26px; font-weight: 900; color: #fff; margin: 0; }
+.sidebar-badge {
+  display:inline-block; padding: 5px 9px; border-radius:999px;
+  background: rgba(255,199,0,0.10); border: 1px solid rgba(255,199,0,0.24);
+  color: var(--gold); font-weight: 900; font-size: 11px; letter-spacing:.12em;
+}
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
-[data-testid="stStatusWidget"] { display: none; }
-.tag-ok    { color: #34d399; font-weight: 600; }
-.tag-warn  { color: #fbbf24; font-weight: 600; }
-.tag-bad   { color: #f87171; font-weight: 600; }
-.defensive-banner { background: #14201a; border: 1px solid #1f3a2b; border-radius: 10px; padding: 10px 14px; color: #86efac; font-size: 13px; }
+
+@media (max-width: 900px) {
+  .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .top-shell { padding: 22px; border-radius: 24px; }
+}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 
-# --------------------------------------------------------------------------
-# SHARED UTILITIES
-# --------------------------------------------------------------------------
-def load_secret(name: str, default=None):
-    """Read a secret from Streamlit secrets first, then environment."""
-    try:
-        if name in st.secrets:
-            return st.secrets[name]
-    except Exception:
-        pass
-    return os.environ.get(name, default)
-
-
-def mask_secret(value: str, keep: int = 10) -> str:
-    """Partially mask a secret for safe display."""
-    if not value:
-        return "(not set)"
-    if len(value) <= keep:
-        return "*" * len(value)
-    return value[:keep] + "…" + "*" * 6
-
-
-def utcnow() -> str:
+def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def download_text(filename: str, text: str, label: str = "Download"):
-    """Render a download button for a text payload."""
-    st.download_button(
-        label=label,
-        data=text.encode("utf-8"),
-        file_name=filename,
-        mime="text/plain",
-    )
-
-
-def send_slack(message: str, webhook: str | None = None) -> tuple[bool, str]:
-    """POST a message to a Slack incoming webhook. Returns (ok, detail).
-
-    Purely outbound notification - no inbound capability.
-    """
-    webhook = webhook or load_secret("SLACK_WEBHOOK_URL")
-    if not webhook:
-        return False, "No Slack webhook configured. Set SLACK_WEBHOOK_URL in Streamlit secrets or .env."
-    if not webhook.startswith("https://hooks.slack.com/"):
-        return False, "Refusing to send: webhook does not look like a Slack incoming webhook URL."
-    if not _HAS_HTTPX:
-        return False, "httpx is not installed (add it to requirements.txt)."
+def load_secret(name: str, default: str = "") -> str:
     try:
-        with httpx.Client(timeout=15.0) as client:
-            r = client.post(webhook, json={"text": message})
-        if r.status_code == 200 and r.text.strip() == "ok":
-            return True, "Delivered to Slack."
-        return False, f"Slack responded HTTP {r.status_code}: {r.text[:200]}"
-    except Exception as e:  # noqa: BLE001
-        return False, f"Request failed: {e}"
+        value = st.secrets.get(name, "")
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    return os.getenv(name, default) or default
 
 
-def geolocate_ip(ip: str, api_key: str | None = None) -> dict | None:
-    """Look up one IP via ipapi.co. Returns parsed dict or None on failure."""
-    ip = (ip or "").strip()
-    if not ip:
-        return None
-    url = f"https://ipapi.co/{ip}/json/"
-    params = {}
-    if api_key:
-        params["key"] = api_key
-    if not _HAS_HTTPX:
-        return None
+def mask_key(value: str) -> str:
+    if not value:
+        return "not set"
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}…{value[-4:]}"
+
+
+def configured_providers() -> list[str]:
+    return [key for key, cfg in PROVIDERS.items() if load_secret(cfg["secret"])]
+
+
+def provider_options() -> list[str]:
+    options = ["demo"]
+    for key in configured_providers():
+        if key not in options:
+            options.append(key)
+    for key in PROVIDERS:
+        if key not in options:
+            options.append(key)
+    return options
+
+
+def provider_display(provider: str) -> str:
+    if provider == "demo":
+        return "Demo mode — no key needed"
+    cfg = PROVIDERS[provider]
+    return f"{cfg['label']} — {'ready' if load_secret(cfg['secret']) else 'needs key'}"
+
+
+def provider_api_key(provider: str, override: str = "") -> str:
+    if override.strip():
+        return override.strip()
+    return load_secret(PROVIDERS[provider]["secret"])
+
+
+def trim_text(text: str, limit: int = 12000) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n\n[Truncated to {limit:,} characters]"
+
+
+def transcript_as_markdown(messages: list[dict[str, str]]) -> str:
+    lines = [f"# {APP_NAME} Transcript", "", f"Exported: {now_utc()}", ""]
+    for message in messages:
+        label = "Assistant" if message["role"] == "assistant" else "User"
+        lines.extend([f"## {label}", "", message["content"], ""])
+    return "\n".join(lines)
+
+
+def extract_uploaded_file(uploaded_file: Any) -> str:
+    name = uploaded_file.name
+    suffix = Path(name).suffix.lower()
+    data = uploaded_file.getvalue()
+
     try:
-        with httpx.Client(timeout=15.0) as client:
-            r = client.get(url, params=params)
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        if data.get("error"):
-            return None
-        return data
-    except Exception:  # noqa: BLE001
-        return None
+        if suffix == ".csv":
+            df = pd.read_csv(io.BytesIO(data))
+            return f"File: {name}\nCSV shape: {df.shape}\nPreview:\n{df.head(30).to_csv(index=False)}"
+
+        if suffix in {".xlsx", ".xls"}:
+            excel = pd.ExcelFile(io.BytesIO(data))
+            chunks = [f"File: {name}", f"Sheets: {', '.join(excel.sheet_names)}"]
+            for sheet in excel.sheet_names[:4]:
+                df = pd.read_excel(excel, sheet_name=sheet, nrows=30)
+                chunks.append(f"\nSheet: {sheet}\nPreview shape: {df.shape}\n{df.to_csv(index=False)}")
+            return "\n".join(chunks)
+
+        if suffix == ".pdf":
+            from PyPDF2 import PdfReader
+
+            reader = PdfReader(io.BytesIO(data))
+            pages = []
+            for page_number, page in enumerate(reader.pages[:12], start=1):
+                pages.append(f"\n--- Page {page_number} ---\n{page.extract_text() or ''}")
+            return f"File: {name}\nPDF pages read: {min(len(reader.pages), 12)} of {len(reader.pages)}\n" + "\n".join(pages)
+
+        if suffix == ".docx":
+            import docx
+
+            document = docx.Document(io.BytesIO(data))
+            text = "\n".join(p.text for p in document.paragraphs if p.text.strip())
+            return f"File: {name}\n\n{text}"
+
+        readable = {
+            ".txt", ".md", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css",
+            ".json", ".toml", ".yaml", ".yml", ".log", ".sql", ".xml",
+        }
+        if suffix in readable or not suffix:
+            return f"File: {name}\n\n{data.decode('utf-8', errors='replace')}"
+
+        return f"File: {name}\nType: {suffix or 'unknown'}\nSize: {len(data):,} bytes\nThis file type is not text-readable here, but the metadata is available."
+    except Exception as exc:
+        return f"File: {name}\nCould not extract content: {exc}"
 
 
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+def build_file_context(files: list[Any]) -> str:
+    if not files:
+        return ""
+    extracted = [trim_text(extract_uploaded_file(file), 9000) for file in files[:6]]
+    return "\n\n".join(extracted)
 
 
-def kv_card(label: str, value, sub: str = ""):
-    st.markdown(
-        f"""<div class="card"><div class="kicker">{label}</div>
-        <div style="font-size:26px;font-weight:700;color:#fff;margin-top:4px">{value}</div>
-        <div style="color:#9ca3af;font-size:12px;margin-top:2px">{sub}</div></div>""",
-        unsafe_allow_html=True,
-    )
-
-
-# --------------------------------------------------------------------------
-# AI PROVIDERS (OpenAI-compatible /chat/completions: Groq, Gemini, OpenAI)
-# --------------------------------------------------------------------------
-AI_PROVIDERS = {
-    "Groq (Free)": {
-        "icon": "⚡", "env_key": "GROQ_API_KEY", "signup": "console.groq.com/keys",
-        "base_url": "https://api.groq.com/openai/v1",
-        "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
-        "default_model": "llama-3.3-70b-versatile",
-    },
-    "Gemini (Free)": {
-        "icon": "💎", "env_key": "GEMINI_API_KEY", "signup": "aistudio.google.com/apikey",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "models": ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
-        "default_model": "gemini-2.0-flash",
-    },
-    "OpenAI": {
-        "icon": "🧠", "env_key": "OPENAI_API_KEY", "signup": "platform.openai.com/api-keys",
-        "base_url": "https://api.openai.com/v1",
-        "models": ["gpt-4o", "gpt-4o-mini"],
-        "default_model": "gpt-4o-mini",
-    },
-}
-
-
-def ai_key_ok(provider_name: str) -> bool:
-    return bool(load_secret(AI_PROVIDERS[provider_name]["env_key"]))
-
-
-def ai_picker():
-    """Render provider + model selectors. Returns (provider_name, model)."""
-    cols = st.columns([1, 1])
-    with cols[0]:
-        provider_name = st.selectbox(
-            "Model provider", list(AI_PROVIDERS.keys()),
-            format_func=lambda n: f"{AI_PROVIDERS[n]['icon']} {n}", key="ai_provider",
-        )
-    prov = AI_PROVIDERS[provider_name]
-    with cols[1]:
-        model = st.selectbox("Model", prov["models"], key=f"ai_model_{provider_name}")
-    if not ai_key_ok(provider_name):
-        st.warning(
-            f"No `{prov['env_key']}` set. Get a free key at **{prov['signup']}**, add it to "
-            f"`.streamlit/secrets.toml` (or env), then reload."
-        )
-    return provider_name, model
-
-
-def stream_chat(messages, provider_name: str, model: str, temperature: float = 0.4):
-    """Stream an OpenAI-compatible chat completion. Yields text deltas.
-
-    Works identically across Groq, Gemini (OpenAI-compat), and OpenAI.
-    """
-    prov = AI_PROVIDERS[provider_name]
-    api_key = load_secret(prov["env_key"])
-    if not api_key:
-        yield "⚠️ No API key configured for this provider. Set it in Streamlit secrets."
-        return
-    if not _HAS_HTTPX:
-        yield "⚠️ httpx is not installed (it's in requirements.txt)."
-        return
-    url = prov["base_url"].rstrip("/") + "/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {"model": model, "messages": messages, "stream": True, "temperature": temperature}
+def tavily_search(query: str, api_key: str) -> list[dict[str, str]]:
     try:
-        with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-            with client.stream("POST", url, headers=headers, json=payload) as r:
-                if r.status_code != 200:
-                    body = r.read().decode("utf-8", "ignore")[:400]
-                    yield f"⚠️ API error HTTP {r.status_code}: {body}"
-                    return
-                for line in r.iter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        delta = json.loads(data)["choices"][0]["delta"].get("content")
-                        if delta:
-                            yield delta
-                    except Exception:  # noqa: BLE001 - skip malformed keepalive chunks
-                        continue
-    except Exception as e:  # noqa: BLE001
-        yield f"⚠️ Request failed: {e}"
+        from tavily import TavilyClient
 
-
-# --------------------------------------------------------------------------
-# WEB SEARCH (multi-source, robust, no hard dependency)
-# --------------------------------------------------------------------------
-_UA = {"User-Agent": "sekta-cybershield/1.0 (+defensive use)"}
-
-
-def _tavily_results(query: str, max_results: int = 5):
-    """Tavily (AI-friendly) search. Requires TAVILY_API_KEY."""
-    key = load_secret("TAVILY_API_KEY")
-    if not key or not _HAS_HTTPX:
-        return []
-    try:
-        from tavily import TavilyClient  # in requirements.txt
-        res = TavilyClient(key).search(query, max_results=max_results)
+        client = TavilyClient(api_key=api_key)
+        response = client.search(query=query, search_depth="basic", max_results=5)
         return [
-            {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")}
-            for r in res.get("results", [])
+            {
+                "title": item.get("title", "Untitled"),
+                "url": item.get("url", ""),
+                "content": item.get("content", ""),
+            }
+            for item in response.get("results", [])
         ]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
-def _wikipedia_results(query: str, max_results: int = 3):
-    """Wikipedia MediaWiki search. No key required."""
-    if not _HAS_HTTPX:
+def keyless_search(query: str) -> list[dict[str, str]]:
+    if httpx is None:
         return []
-    out = []
+
+    results: list[dict[str, str]] = []
     try:
-        with httpx.Client(timeout=15.0, headers=_UA) as c:
-            r = c.get("https://en.wikipedia.org/w/api.php", params={
-                "action": "query", "list": "search", "srlimit": max_results,
-                "format": "json", "srsearch": query, "srprop": "snippet",
-            })
-            for h in r.json().get("query", {}).get("search", []):
-                title = h["title"]
-                snippet = re.sub(r"<[^>]+>", "", h.get("snippet", ""))
-                out.append({"title": title,
-                            "url": "https://en.wikipedia.org/wiki/" + quote(title),
-                            "snippet": snippet})
-    except Exception:  # noqa: BLE001
-        pass
-    return out
-
-
-def _ddg_instant_answer(query: str):
-    """DuckDuckGo Instant Answer API. No key required."""
-    if not _HAS_HTTPX:
-        return []
-    try:
-        with httpx.Client(timeout=15.0, headers=_UA) as c:
-            d = c.get("https://api.duckduckgo.com/", params={
-                "q": query, "format": "json", "no_html": 1, "skip_disambig": 1,
-            }).json()
-        if d.get("AbstractText"):
-            return [{"title": d.get("Heading", query),
-                     "url": d.get("AbstractURL", "https://duckduckgo.com/?q=" + quote(query)),
-                     "snippet": d["AbstractText"]}]
-    except Exception:  # noqa: BLE001
-        pass
-    return []
-
-
-def web_search(query: str, max_results: int = 5):
-    """Multi-source web search -> normalized {title, url, snippet} dicts.
-
-    Order: Tavily (if key) -> Wikipedia -> DuckDuckGo Instant Answer.
-    Always returns something when any source works; never raises.
-    """
-    res = _tavily_results(query, max_results)
-    if res:
-        return res[:max_results]
-    res = _wikipedia_results(query, max_results=3)
-    res += _ddg_instant_answer(query)
-    return res[:max_results]
-
-
-# --------------------------------------------------------------------------
-# SECTIONS
-# --------------------------------------------------------------------------
-def header(title: str, subtitle: str):
-    st.markdown(f'<div class="kicker">🛡️ Sekta Gold · Cyber Shield</div>', unsafe_allow_html=True)
-    st.markdown(f"## {title}")
-    st.caption(subtitle)
-
-
-def section_overview():
-    header("Operations Overview", "Status of integrations and quick navigation.")
-
-    slack_on = bool(load_secret("SLACK_WEBHOOK_URL"))
-    ipapi_key = bool(load_secret("IPAPI_KEY"))
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        kv_card("Slack Alerting", "ON" if slack_on else "OFF", mask_secret(load_secret("SLACK_WEBHOOK_URL")))
-    with c2:
-        kv_card("ipapi.co Key", "SET" if ipapi_key else "FREE TIER", "Geolocation enrichment")
-    with c3:
-        kv_card("Mode", "Defensive", "No offensive capability")
-    with c4:
-        kv_card("Local Time", utcnow().split(" ")[1], "UTC")
-
-    st.markdown('<div class="defensive-banner">🟢 <b>Defensive-only.</b> This dashboard generates detection, alerting, and hardening artifacts. It performs no scanning, exploitation, or attack against any system.</div>', unsafe_allow_html=True)
-
-    st.markdown("### What each tool does")
-    rows = [
-        ("Slack Alerts", "Central notifier - test and verify your webhook before relying on it."),
-        ("Honeypot Canaries", "Generate decoy files + a host monitor script that alerts Slack when touched."),
-        ("IP Geolocation", "Enrich attacker IPs with city/country/ASN and plot them on a world map."),
-        ("Fail2Ban Builder", "Generate jail.local + filter regex from a sample log line."),
-        ("Cloudflare WAF", "Compose firewall expressions (block by IP/ASN/country/path)."),
-        ("File Integrity", "SHA-256 baselines and change detection for important files."),
-        ("Encrypted Backup", "Generate a tar + gpg backup script with retention policy."),
-        ("auth.log Analyzer", "Detect brute-force SSH patterns and rank offending IPs."),
-        ("AI Security Advisor", "LLM explains threats + recommends defensive actions from your dashboard data."),
-        ("AI Assistant", "General-purpose technical chat with optional live web search — Groq, Gemini, or OpenAI."),
-    ]
-    st.table(pd.DataFrame(rows, columns=["Tool", "Purpose"]))
-
-
-def section_alerts():
-    header("Slack Alerting", "Central notifier used by the other tools. Test it here.")
-
-    webhook = load_secret("SLACK_WEBHOOK_URL")
-    st.markdown(f"**Configured webhook:** `{mask_secret(webhook)}`")
-    if not webhook:
-        st.info("No webhook set. Add `SLACK_WEBHOOK_URL` to `.streamlit/secrets.toml` (recommended) or `.env`, then reload. Create one at https://api.slack.com/messaging/webhooks")
-
-    with st.form("slack_test"):
-        msg = st.text_area("Message", value=f"🛡️ Cyber Shield test ping at {utcnow()}", height=80)
-        col_a, col_b = st.columns([1, 3])
-        with col_a:
-            override = st.text_input("Override webhook (optional)", type="password", placeholder="https://hooks.slack.com/services/...")
-        submitted = st.form_submit_button("Send test alert", type="primary")
-
-    if submitted:
-        with st.spinner("Sending…"):
-            ok, detail = send_slack(msg, webhook=override or None)
-        if ok:
-            st.success(detail)
-        else:
-            st.error(detail)
-
-
-def section_honeypot():
-    header("Honeypot Canaries", "Decoy files that look tempting but are useless, plus a monitor that alerts Slack when touched.")
-
-    st.markdown("Canaries are deployed on YOUR server. The monitor uses `inotifywait` to watch for access and fires a Slack alert. Generated canaries contain clearly-fake tokens so they're worthless if exfiltrated.")
-
-    presets = {
-        "aws_keys.txt": "# AWS CLI credentials (DECOY)\n[default]\naws_access_key_id = AKIAFAKECANARY000001\naws_secret_access_key = CANARY-please-report-this-access-0001\nregion = us-east-1\n",
-        ".env.prod": "# Production environment (DECOY)\nDATABASE_URL=postgres://canary:NOT-REAL-PASSWORD@db.internal:5432/prod\nSTRIPE_SECRET_KEY=sk_live_CANARY_FAKE_0001\nADMIN_TOKEN=canary-token-do-not-use\n",
-        "id_rsa": "-----BEGIN OPENSSH PRIVATE KEY-----\nDECOY CANARY KEY - REPORT ACCESS TO SECURITY - NOT A REAL KEY\n-----END OPENSSH PRIVATE KEY-----\n",
-        "backup.sql.header": "-- MySQL dump (DECOY) -- canary file, report access\n",
-    }
-
-    chosen = st.multiselect("Canary files to generate", list(presets.keys()), default=list(presets.keys())[:2])
-    deploy_dir = st.text_input("Deploy directory on your server", value="/opt/canary")
-
-    webhook = load_secret("SLACK_WEBHOOK_URL")
-    if not webhook:
-        st.warning("No Slack webhook configured. The monitor script will still be generated, but alerts will fail until SLACK_WEBHOOK_URL is set.")
-
-    # The monitor script - host-side, text only. Never executed by this app.
-    monitor = f"""#!/usr/bin/env bash
-# Canary honeypot monitor - DEPLOY ON YOUR SERVER.
-# Requires: inotify-tools (apt-get install inotify-tools), curl.
-# Alerts Slack whenever a canary file is read/opened.
-set -u
-CANARY_DIR="{deploy_dir}"
-WEBHOOK="${{SLACK_WEBHOOK_URL:-{webhook or 'PUT_YOUR_SLACK_WEBHOOK_HERE'}}}"
-HOST="$(hostname -s 2>/dev/null || echo host)"
-
-[ -d "$CANARY_DIR" ] || {{ echo "Missing $CANARY_DIR" >&2; exit 1; }}
-command -v inotifywait >/dev/null || {{ echo "Install inotify-tools" >&2; exit 1; }}
-
-echo "Watching $CANARY_DIR for access…"
-inotifywait -m -r -e open,access --format '%w%f %e %T' --timefmt '%H:%M:%S' "$CANARY_DIR" |
-while read -r file events ts; do
-  msg="🚨 CANARY TRIPPED on *$HOST* at $ts UTC\\nFile: \\\`$file\\\`\\nEvent: $events\\nLikely unauthorized access."
-  curl -s -X POST -H 'Content-type: application/json' \\
-    --data "$(printf '{{"text":"%s"}}' "$msg")" "$WEBHOOK" >/dev/null
-  logger -t canary "tripped: $file $events"
-done
-"""
-
-    st.markdown("#### Generated canary files")
-    for name in chosen:
-        with st.expander(name):
-            st.code(presets[name], language="text")
-
-    st.markdown("#### Monitor script (`canary-watch.sh`)")
-    st.code(monitor, language="bash")
-
-    # Bundle everything into a zip for easy download
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for name in chosen:
-            z.writestr(f"canary/{name}", presets[name])
-        z.writestr("canary/canary-watch.sh", monitor)
-        z.writestr("canary/README.txt", "Canary honeypot pack generated by Sekta Gold Cyber Shield.\nDeploy the canary/ directory to your server and run canary-watch.sh.\nThese files are DECOYS containing fake tokens.\n")
-    buf.seek(0)
-    st.download_button("⬇️ Download canary pack (.zip)", buf, file_name="cyber_shield_canary_pack.zip", mime="application/zip")
-
-    st.caption("Deploy tip: place canaries where an attacker who got in would naturally poke around (home dirs, /var/backups, app roots). Make permissions look real.")
-
-
-def section_geo():
-    header("IP Geolocation & Threat Map", "Enrich attacker IPs via ipapi.co and plot them on a world map.")
-    st.caption("Free tier: ~30k requests/month. Leave the API key blank to use the free tier, or set IPAPI_KEY for higher limits.")
-
-    ips_raw = st.text_area("IPs (one per line, or comma-separated)", height=120, placeholder="203.0.113.5\n198.51.100.10")
-    ips = [x.strip() for x in re.split(r"[\n,]+", ips_raw) if x.strip()]
-    api_key = load_secret("IPAPI_KEY")
-
-    if st.button("Geolocate", type="primary", disabled=not ips):
-        rows = []
-        bar = st.progress(0.0, text="Looking up IPs…")
-        for i, ip in enumerate(ips):
-            data = geolocate_ip(ip, api_key=api_key)
-            if data:
-                rows.append({
-                    "IP": ip,
-                    "Country": data.get("country_name", "?"),
-                    "Region": data.get("region", "?"),
-                    "City": data.get("city", "?"),
-                    "Org/ISP": data.get("org", "?"),
-                    "ASN": data.get("asn", "?"),
-                    "Lat": data.get("latitude"),
-                    "Lon": data.get("longitude"),
-                })
-            else:
-                rows.append({"IP": ip, "Country": "(lookup failed)", "Region": "?", "City": "?", "Org/ISP": "?", "ASN": "?", "Lat": None, "Lon": None})
-            time.sleep(1.0)  # respect free-tier rate guidance
-            bar.progress((i + 1) / len(ips))
-        bar.empty()
-
-        if not rows:
-            st.warning("No results.")
-            return
-
-        st.session_state["geo_rows"] = rows
-
-    rows = st.session_state.get("geo_rows")
-    if rows:
-        df = pd.DataFrame(rows)
-        st.dataframe(df.drop(columns=["Lat", "Lon"]), use_container_width=True, hide_index=True)
-        if _HAS_PLOTLY:
-            geo_df = df.dropna(subset=["Lat", "Lon"])
-            if not geo_df.empty:
-                fig = px.scatter_geo(
-                    geo_df, lat="Lat", lon="Lon", hover_name="IP",
-                    hover_data=["Country", "City", "Org/ISP"],
-                    projection="natural earth", color_discrete_sequence=["#FFC700"],
-                )
-                fig.update_layout(
-                    paper_bgcolor="#0A0A0B", geo=dict(bgcolor="#0A0A0B", showland=True, landcolor="#141415",
-                    countrycolor="#27272a", lakecolor="#0A0A0B"),
-                    margin=dict(l=0, r=0, t=0, b=0), height=460,
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No plottable coordinates.")
-
-
-def section_fail2ban():
-    header("Fail2Ban Config Generator", "Build a jail + filter from a sample log line. Deploy on your server.")
-    sample = st.text_input("Sample offending log line", value="Failed password for invalid user admin from 203.0.113.5 port 51022 ssh2")
-    findtime = st.number_input("findtime (seconds)", value=600, step=60)
-    maxretry = st.number_input("maxretry", value=5, min_value=1)
-    bantime = st.number_input("bantime (seconds)", value=3600, step=300)
-
-    # Heuristic regex builder from the sample - extract the IP via common pattern.
-    # This only *generates* a filter; it does not inspect any system.
-    ip_guess = re.search(r"\bfrom (\d{1,3}(?:\.\d{1,3}){3})\b", sample)
-    base = sample
-    if ip_guess:
-        base = sample.replace(ip_guess.group(1), "<HOST>")
-    base = re.escape(base).replace(re.escape("<HOST>"), "<HOST>")
-
-    filt = f"""# /etc/fail2ban/filter.d/cybershield.conf
-[INCLUDES]
-before = common.conf
-
-[Definition]
-failregex = ^.*{base}.*$
-ignoreregex =
-
-# Generated by Sekta Gold Cyber Shield. Review before deploying.
-"""
-
-    jail = f"""# /etc/fail2ban/jail.local
-[cybershield]
-enabled  = true
-filter   = cybershield
-logpath  = /var/log/auth.log
-backend  = systemd
-port     = ssh
-maxretry = {maxretry}
-findtime = {findtime}
-bantime  = {bantime}
-action   = %(action_)s
-"""
-
-    st.markdown("#### Filter (`cybershield.conf`)")
-    st.code(filt, language="ini")
-    download_text("cybershield.conf", filt, "⬇️ Download filter")
-
-    st.markdown("#### Jail (`jail.local` excerpt)")
-    st.code(jail, language="ini")
-    download_text("jail.local", jail, "⬇️ Download jail")
-
-    st.caption("Tip: test with `fail2ban-regex /var/log/auth.log /etc/fail2ban/filter.d/cybershield.conf` before enabling.")
-
-
-def section_waf():
-    header("Cloudflare WAF Rule Builder", "Compose custom firewall expressions. Paste into Cloudflare > Security > WAF > Custom rules.")
-    mode = st.radio("Build mode", ["Block by IP list", "Block by ASN", "Block by country", "Block by path pattern"])
-    expr = ""
-    if mode == "Block by IP list":
-        ips = st.text_area("IPs (CIDR allowed, one per line)", placeholder="203.0.113.5\n198.51.100.0/24")
-        parts = [f'(ip.src eq "{x.strip()}")' for x in ips.splitlines() if x.strip()]
-        expr = " or ".join(parts)
-    elif mode == "Block by ASN":
-        asns = st.text_input("ASNs (comma separated)", placeholder="AS12345, AS67890")
-        parts = [f'(ip.geoip.asnum eq {int(re.sub(r"[^0-9]", "", a))})' for a in asns.split(",") if re.sub(r"[^0-9]", "", a)]
-        expr = " or ".join(parts)
-    elif mode == "Block by country":
-        cc = st.text_input("Country codes (comma separated)", placeholder="CN, RU")
-        parts = [f'(ip.geoip.country eq "{a.strip().upper()}")' for a in cc.split(",") if a.strip()]
-        expr = " or ".join(parts)
-    elif mode == "Block by path pattern":
-        pat = st.text_input("Path pattern (matches.lookup against raw URI)", placeholder="/.env")
-        pat_safe = pat.replace('"', '\\"')
-        expr = f'(http.request.uri.path contains "{pat_safe}")'
-
-    action = st.selectbox("Action", ["Block", "Challenge", "Managed Challenge", "JS Challenge", "Log"])
-    if expr:
-        st.markdown("#### Expression")
-        st.code(expr, language="sql")
-        st.markdown(f"**Action:** `{action}`  — set this in the rule's 'Then take action' dropdown.")
-        st.caption("Review against Cloudflare's expression reference before deploying.")
-
-
-def section_fim():
-    header("File Integrity Monitor", "SHA-256 baselines and change detection.")
-    mode = st.radio("Mode", ["Build baseline", "Compare against baseline"], horizontal=True)
-
-    if mode == "Build baseline":
-        files = st.file_uploader("Upload files to baseline", accept_multiple_files=True)
-        if files:
-            baseline = {}
-            for f in files:
-                data = f.read()
-                baseline[f.name] = {
-                    "sha256": sha256_bytes(data),
-                    "size": len(data),
-                    "baseline_at": utcnow(),
+        response = httpx.get(
+            "https://api.duckduckgo.com/",
+            params={"q": query, "format": "json", "no_html": 1, "skip_disambig": 1},
+            timeout=10,
+        )
+        data = response.json()
+        if data.get("AbstractText"):
+            results.append(
+                {
+                    "title": data.get("Heading") or "DuckDuckGo result",
+                    "url": data.get("AbstractURL") or "https://duckduckgo.com/",
+                    "content": data.get("AbstractText", ""),
                 }
-            blob = json.dumps(baseline, indent=2)
-            st.code(blob, language="json")
-            download_text("baseline.json", blob, "⬇️ Download baseline.json")
-            st.caption("Store baseline.json securely (e.g., read-only or off-host). Re-run Compare with the same files to detect tampering.")
-    else:
-        baseline_file = st.file_uploader("Upload baseline.json", type=["json"])
-        current_files = st.file_uploader("Upload current files to check", accept_multiple_files=True)
-        if baseline_file and current_files:
-            try:
-                baseline = json.loads(baseline_file.read().decode("utf-8"))
-            except Exception as e:  # noqa: BLE001
-                st.error(f"Could not parse baseline.json: {e}")
-                return
-            findings = []
-            for f in current_files:
-                data = f.read()
-                now_hash = sha256_bytes(data)
-                rec = baseline.get(f.name)
-                if rec is None:
-                    findings.append((f.name, "NEW", "Not in baseline"))
-                elif rec.get("sha256") == now_hash:
-                    findings.append((f.name, "OK", "Matches baseline"))
-                else:
-                    findings.append((f.name, "CHANGED", f"Was {rec.get('sha256','?')[:12]}… now {now_hash[:12]}…"))
-            missing = [n for n in baseline if n not in {f.name for f in current_files}]
-            for n in missing:
-                findings.append((n, "MISSING", "In baseline but not uploaded"))
-            df = pd.DataFrame(findings, columns=["File", "Status", "Detail"])
-            st.dataframe(df, use_container_width=True, hide_index=True)
-
-
-def section_backup():
-    header("Encrypted Backup Generator", "Generate a tar + gpg backup script with retention. Review and deploy on your server.")
-    src = st.text_input("Directory to back up", value="/var/www")
-    dest = st.text_input("Backup destination", value="/backups")
-    keep = st.number_input("Retain last N backups", value=7, min_value=1)
-    gpg_recipient = st.text_input("GPG recipient (-r), optional", placeholder="admin@example.com")
-
-    enc = "gpg --batch --yes --symmetric"  # default symmetric passphrase
-    if gpg_recipient.strip():
-        enc = f"gpg --batch --yes --recipient {gpg_recipient.strip()} --encrypt"
-
-    script = f"""#!/usr/bin/env bash
-# Encrypted backup - DEPLOY ON YOUR SERVER. Requires tar + gpg.
-set -euo pipefail
-SRC="{src}"
-DEST="{dest}"
-KEEP={keep}
-TS="$(date +%Y%m%d-%H%M%S)"
-HOST="$(hostname -s)"
-
-mkdir -p "$DEST"
-OUT="$DEST/${{HOST}}-${{TS}}.tar.gz"
-echo "Backing up $SRC -> $OUT"
-tar -czf - -C "$(dirname "$SRC")" "$(basename "$SRC")" | {enc} > "$OUT.gpg"
-chmod 600 "$OUT.gpg"
-echo "Wrote $OUT.gpg"
-
-# Retention: keep newest $KEEP encrypted backups
-ls -1t "$DEST"/${{HOST}}-*.tar.gz.gpg 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r old; do
-  rm -f "$old"; echo "Pruned $old"
-done
-echo "Done."
-"""
-    st.code(script, language="bash")
-    download_text("backup.sh", script, "⬇️ Download backup.sh")
-    st.caption("Schedule with cron, e.g.: `0 3 * * * /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1`. Symmetric mode will prompt for a passphrase unless you supply it via gpg-agent or a passphrase file.")
-
-
-SSH_FAIL_RE = re.compile(r"Failed password for (?:invalid user )?(?P<user>\S+) from (?P<ip>\d{1,3}(?:\.\d{1,3}){3})")
-SSH_OK_RE = re.compile(r"Accepted (?:password|publickey) for (?P<user>\S+) from (?P<ip>\d{1,3}(?:\.\d{1,3}){3})")
-
-
-def section_authlog():
-    header("auth.log Analyzer", "Detect brute-force SSH attempts. Upload or paste your auth.log (client-side parse only).")
-    src = st.radio("Source", ["Paste text", "Upload file"], horizontal=True)
-    text = ""
-    if src == "Paste text":
-        text = st.text_area("auth.log contents", height=180, placeholder="Jan 1 12:00:00 host sshd[123]: Failed password for invalid user root from 203.0.113.5 port 51022 ssh2")
-    else:
-        up = st.file_uploader("Upload auth.log", type=["log", "txt", ""])
-        if up:
-            text = up.read().decode("utf-8", errors="ignore")
-
-    if not text.strip():
-        st.info("Provide auth.log data to analyze.")
-        return
-
-    failed_by_ip = Counter()
-    failed_by_user = Counter()
-    ok_by_ip = Counter()
-    for line in text.splitlines():
-        m = SSH_FAIL_RE.search(line)
-        if m:
-            failed_by_ip[m.group("ip")] += 1
-            failed_by_user[m.group("user")] += 1
-            continue
-        m2 = SSH_OK_RE.search(line)
-        if m2:
-            ok_by_ip[m2.group("ip")] += 1
-
-    total_fail = sum(failed_by_ip.values())
-    bf_threshold = st.slider("Brute-force threshold (failures/IP)", min_value=3, max_value=100, value=10)
-    brute = {ip: n for ip, n in failed_by_ip.items() if n >= bf_threshold}
-    st.session_state["bf_findings"] = brute  # consumed by the AI Security Advisor
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Failed attempts", total_fail)
-    c2.metric("Unique offending IPs", len(failed_by_ip))
-    c3.metric("Likely brute-force IPs", len(brute))
-
-    if failed_by_ip:
-        st.markdown("### Top offending IPs")
-        top = pd.DataFrame(failed_by_ip.most_common(20), columns=["IP", "Failed attempts"])
-        st.dataframe(top, use_container_width=True, hide_index=True)
-
-    if failed_by_user:
-        st.markdown("### Targeted usernames")
-        st.dataframe(pd.DataFrame(failed_by_user.most_common(15), columns=["Username", "Attempts"]), use_container_width=True, hide_index=True)
-
-    if brute:
-        st.markdown("### 🚩 Brute-force IPs (consider banning)")
-        bf_df = pd.DataFrame(sorted(brute.items(), key=lambda x: -x[1]), columns=["IP", "Failed attempts"])
-        st.dataframe(bf_df, use_container_width=True, hide_index=True)
-        ips = "\n".join(bf_df["IP"].tolist())
-        st.text_area("Copy these to IP Geolocation or Fail2Ban", ips, height=120)
-
-        if st.button("🔔 Send top brute-force summary to Slack", type="primary"):
-            webhook = load_secret("SLACK_WEBHOOK_URL")
-            if not webhook:
-                st.error("Set SLACK_WEBHOOK_URL to enable Slack alerts.")
-            else:
-                msg = f"🛡️ Cyber Shield: {len(brute)} brute-force IP(s) detected.\n" + "\n".join(
-                    f"• {ip} ({n} fails)" for ip, n in sorted(brute.items(), key=lambda x: -x[1])[:15]
+            )
+        for topic in data.get("RelatedTopics", [])[:4]:
+            if isinstance(topic, dict) and topic.get("Text"):
+                results.append(
+                    {
+                        "title": topic.get("Text", "")[:90],
+                        "url": topic.get("FirstURL", ""),
+                        "content": topic.get("Text", ""),
+                    }
                 )
-                ok, detail = send_slack(msg)
-                (st.success if ok else st.error)(detail)
-    else:
-        st.success("No IPs crossed the brute-force threshold.")
+    except Exception:
+        pass
+
+    if len(results) < 2:
+        try:
+            title = query.strip().replace(" ", "_")[:120]
+            response = httpx.get(f"https://en.wikipedia.org/api/rest_v1/page/summary/{title}", timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("extract"):
+                    results.append(
+                        {
+                            "title": data.get("title", "Wikipedia"),
+                            "url": data.get("content_urls", {}).get("desktop", {}).get("page", ""),
+                            "content": data.get("extract", ""),
+                        }
+                    )
+        except Exception:
+            pass
+
+    return results[:5]
 
 
-# --------------------------------------------------------------------------
-# AI SECTIONS
-# --------------------------------------------------------------------------
-ASSISTANT_SYSTEM = (
-    "You are Sekta, a highly capable technical assistant, strong across software engineering, "
-    "data & analytics, security, cloud/infrastructure, research, and writing. Be concise, accurate, "
-    "and practical; use code blocks where helpful. Refuse requests to build offensive/attack tooling "
-    "and steer toward legitimate, defensive use."
-)
+def web_context(query: str) -> tuple[str, list[dict[str, str]]]:
+    tavily_key = load_secret("TAVILY_API_KEY")
+    results = tavily_search(query, tavily_key) if tavily_key else []
+    if not results:
+        results = keyless_search(query)
+    if not results:
+        return "", []
 
-SUGGESTIONS = [
-    "Explain OAuth2 vs. session cookies",
-    "Write Python to dedupe a list of dicts by a key",
-    "How do I harden an SSH server?",
-    "Explain this regex: ^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$",
-]
+    lines = ["Web context. Use when relevant and cite the URLs:"]
+    for index, item in enumerate(results, start=1):
+        lines.append(
+            f"[{index}] {item.get('title', 'Untitled')}\nURL: {item.get('url', '')}\nSnippet: {item.get('content', '')}"
+        )
+    return "\n\n".join(lines), results
 
 
-def section_ai_assistant():
-    header("AI Assistant", "General-purpose technical assistant — Groq, Gemini, or OpenAI.")
-    provider_name, model = ai_picker()
+def call_chat_model(
+    provider: str,
+    api_key: str,
+    model: str,
+    messages: list[dict[str, str]],
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    try:
+        from openai import OpenAI
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("The OpenAI package is missing. Install requirements.txt and redeploy.") from exc
 
-    if "ai_messages" not in st.session_state:
-        st.session_state["ai_messages"] = []
+    cfg = PROVIDERS[provider]
+    client_kwargs: dict[str, Any] = {"api_key": api_key}
+    if cfg["base_url"]:
+        client_kwargs["base_url"] = cfg["base_url"]
 
-    tcol1, tcol2, tcol3 = st.columns([1, 2, 3])
-    with tcol1:
-        if st.button("🗑️ Clear chat", use_container_width=True):
-            st.session_state["ai_messages"] = []
-            st.rerun()
-    with tcol2:
-        web_on = st.toggle("🔍 Web search", value=False, key="ai_web",
-                           help="Pull live results (Tavily if key set, else Wikipedia/DuckDuckGo) into the answer")
-    with tcol3:
-        st.caption(f"{AI_PROVIDERS[provider_name]['icon']} {provider_name} · `{model}`")
-
-    for m in st.session_state["ai_messages"]:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
-
-    # Empty-state suggestion chips
-    if not st.session_state["ai_messages"]:
-        for i, s in enumerate(SUGGESTIONS):
-            if st.button(s, key=f"sug_{i}"):
-                st.session_state["pending_prompt"] = s
-                st.rerun()
-
-    prompt = st.chat_input("Ask anything — code, debug, explain, plan, analyze…") or \
-        st.session_state.pop("pending_prompt", None)
-
-    if prompt:
-        st.session_state["ai_messages"].append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        with st.chat_message("assistant"):
-            history = st.session_state["ai_messages"][-20:]
-            msgs = [{"role": "system", "content": ASSISTANT_SYSTEM}] + \
-                [{"role": m["role"], "content": m["content"]} for m in history]
-            sources_md = ""
-            if web_on:
-                with st.spinner("Searching the web…"):
-                    results = web_search(prompt)
-                if results:
-                    ctx = "\n\n".join(f"[{i+1}] {r['title']} ({r['url']}):\n{r['snippet']}"
-                                      for i, r in enumerate(results))
-                    msgs.append({"role": "system", "content":
-                                 "Relevant live web results (cite by number; prefer these for factual claims):\n" + ctx})
-                    sources_md = "\n\n**Sources:**\n" + "\n".join(
-                        f"{i+1}. [{r['title']}]({r['url']})" for i, r in enumerate(results))
-            placeholder = st.empty()
-            collected = []
-            with st.spinner("Thinking…"):
-                for delta in stream_chat(msgs, provider_name, model):
-                    collected.append(delta)
-                    placeholder.markdown("".join(collected))
-            answer = "".join(collected) + sources_md
-            placeholder.markdown(answer or "_(no response)_")
-        st.session_state["ai_messages"].append({"role": "assistant", "content": answer})
-
-
-ADVISOR_SYSTEM = (
-    "You are Sekta Shield, a defensive security analyst. Using the context provided, explain what is "
-    "happening in plain English, assess severity, and recommend ONLY legitimate, DEFENSIVE actions "
-    "(e.g., Fail2Ban bans, Cloudflare WAF rules, patching, hardening, monitoring, isolation). Refuse "
-    "any request that would facilitate attacks, exploitation, or unauthorized access. Use short "
-    "sections: **Summary**, **Risk**, **Recommended actions**."
-)
-
-
-def _advisor_context() -> str:
-    parts = []
-    bf = st.session_state.get("bf_findings")
-    if bf:
-        lines = [f"- {ip} — {n} failed logins" for ip, n in sorted(bf.items(), key=lambda x: -x[1])[:15]]
-        parts.append("Brute-force IPs detected (auth.log Analyzer tab):\n" + "\n".join(lines))
-    geo = st.session_state.get("geo_rows")
-    if geo:
-        lines = [f"- {r.get('IP')} — {r.get('Country')}, {r.get('City')}, {r.get('Org/ISP')}" for r in geo[:15]]
-        parts.append("Geolocated IPs (IP Geolocation tab):\n" + "\n".join(lines))
-    return ("\nContext pulled from this dashboard:\n" + "\n".join(parts) + "\n\n") if parts else ""
-
-
-def section_ai_advisor():
-    header("AI Security Advisor", "Plain-English threat analysis + defensive recommendations.")
-    provider_name, model = ai_picker()
-
-    ctx = _advisor_context()
-    situation = st.text_area(
-        "Describe the situation or paste logs (auth.log lines, IPs, alerts)…",
-        value=ctx, height=170, key="advisor_input",
+    client = OpenAI(**client_kwargs)
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )
-    ready = bool(situation.strip()) and ai_key_ok(provider_name)
-    if st.button("Analyze", type="primary", disabled=not ready):
-        msgs = [{"role": "system", "content": ADVISOR_SYSTEM}, {"role": "user", "content": situation}]
-        with st.chat_message("assistant"):
-            placeholder = st.empty()
-            out = []
-            with st.spinner("Analyzing…"):
-                for delta in stream_chat(msgs, provider_name, model, temperature=0.2):
-                    out.append(delta)
-                    placeholder.markdown("".join(out))
-            placeholder.markdown("".join(out) or "_(no response)_")
+    return response.choices[0].message.content or ""
+
+
+def demo_response(prompt: str, file_context: str, search_context: str) -> str:
+    response = [
+        "I’m online in **Demo mode**, so the dashboard is working but no live AI provider is connected yet.",
+        "",
+        "To turn this into the real chatbot, add one of these secrets in Streamlit Cloud:",
+        "```toml",
+        'GROQ_API_KEY = "your_key"',
+        '# or OPENAI_API_KEY = "your_key"',
+        '# or GEMINI_API_KEY = "your_key"',
+        "```",
+        "",
+        "Your message was:",
+        f"> {prompt}",
+    ]
+    if file_context:
+        response.append("\nI also received uploaded file context. Add an AI key and I can analyze it fully.")
+    if search_context:
+        response.append("\nWeb context was collected. Add an AI key and I can summarize it with citations.")
+    return "\n".join(response)
+
+
+def ensure_state() -> None:
+    if "messages" not in st.session_state:
+        st.session_state.messages = [
+            {
+                "role": "assistant",
+                "content": "Welcome to **SEKTA GOLD AI**. I’m ready for chat, files, code, research, and strategy.",
+            }
+        ]
+    if "pending_prompt" not in st.session_state:
+        st.session_state.pending_prompt = ""
+
+
+def queue_prompt(prompt: str) -> None:
+    st.session_state.pending_prompt = prompt
+
+
+ensure_state()
+
+configured = configured_providers()
+default_options = provider_options()
+default_index = 1 if configured else 0
+
+with st.sidebar:
+    st.markdown('<div class="sidebar-badge">SEKTA GOLD</div>', unsafe_allow_html=True)
+    st.markdown('<p class="sidebar-title">AI Control</p>', unsafe_allow_html=True)
+    st.caption(APP_VERSION)
+
+    provider = st.selectbox(
+        "Provider",
+        default_options,
+        index=min(default_index, len(default_options) - 1),
+        format_func=provider_display,
+    )
+
+    pasted_key = ""
+    model = "demo"
+    if provider == "demo":
+        st.info("Demo mode confirms the dashboard loads. Add a provider key for real AI answers.")
+    else:
+        cfg = PROVIDERS[provider]
+        secret_value = load_secret(cfg["secret"])
+        st.caption(f"Secret `{cfg['secret']}`: {mask_key(secret_value)}")
+        pasted_key = st.text_input("Temporary API key override", type="password")
+        model = st.text_input("Model", value=cfg["model"])
 
     st.divider()
-    st.markdown("### ⚙️ AI-generated hardening configs")
-    bf = st.session_state.get("bf_findings") or {}
-    geo = st.session_state.get("geo_rows") or []
-    ipset = sorted(set(list(bf.keys()) + [
-        r.get("IP") for r in geo if r.get("IP") and not str(r.get("IP")).startswith("(")]))
-    if not ipset:
-        st.info("No attacker IPs in this session yet. Run the **📜 auth.log Analyzer** or "
-                "**🌍 IP Geolocation** tab first, then return here to auto-generate bans.")
-    else:
-        st.caption("Targeting: " + ", ".join(f"`{ip}`" for ip in ipset[:20]) +
-                   (" …" if len(ipset) > 20 else ""))
-        if st.button("Generate Fail2Ban + Cloudflare WAF config", type="primary",
-                     disabled=not ai_key_ok(provider_name)):
-            fix_user = (
-                "Generate ready-to-paste DEFENSIVE hardening artifacts for these attacker source IPs:\n"
-                + ", ".join(ipset) + "\n\n"
-                "Produce exactly two fenced code blocks:\n"
-                "1) A Fail2Ban jail.local entry plus a filter failregex that bans these source IPs.\n"
-                "2) A Cloudflare WAF custom-rule expression that blocks these IPs.\n"
-                "Add a one-line explanation before each block. Hardening only; nothing offensive."
-            )
-            msgs = [{"role": "system", "content":
-                     "You are a defensive security engineer. Output only legitimate hardening "
-                     "configuration. Refuse any offensive request."},
-                    {"role": "user", "content": fix_user}]
-            cfg = []
-            with st.chat_message("assistant"):
-                ph = st.empty()
-                with st.spinner("Generating configs…"):
-                    for delta in stream_chat(msgs, provider_name, model, temperature=0.1):
-                        cfg.append(delta)
-                        ph.markdown("".join(cfg))
-                text = "".join(cfg)
-                ph.markdown(text or "_(no response)_")
-                if text:
-                    st.download_button("⬇️ Download ai_hardening_configs.txt",
-                                       text.encode("utf-8"), file_name="ai_hardening_configs.txt")
+    temperature = st.slider("Creativity", 0.0, 1.2, 0.65, 0.05)
+    max_tokens = st.slider("Max response tokens", 256, 4096, 1400, 128)
+    enable_web = st.toggle("Add web context", value=False)
 
+    with st.expander("System prompt", expanded=False):
+        system_prompt = st.text_area("Instructions", value=DEFAULT_SYSTEM_PROMPT, height=190)
 
-# --------------------------------------------------------------------------
-# NAV
-# --------------------------------------------------------------------------
-NAV = {
-    "📊 Overview": section_overview,
-    "🔔 Slack Alerts": section_alerts,
-    "🍯 Honeypot Canaries": section_honeypot,
-    "🤖 AI Security Advisor": section_ai_advisor,
-    "🌍 IP Geolocation": section_geo,
-    "🚫 Fail2Ban Builder": section_fail2ban,
-    "☁️ Cloudflare WAF": section_waf,
-    "🔍 File Integrity": section_fim,
-    "💾 Encrypted Backup": section_backup,
-    "📜 auth.log Analyzer": section_authlog,
-    "💬 AI Assistant": section_ai_assistant,
-}
+    uploaded_files = st.file_uploader(
+        "Attach files",
+        type=[
+            "txt", "md", "csv", "xlsx", "xls", "pdf", "docx", "py", "js", "ts", "tsx", "jsx",
+            "json", "html", "css", "log", "sql", "xml", "yaml", "yml", "toml",
+        ],
+        accept_multiple_files=True,
+    )
 
+    left, right = st.columns(2)
+    with left:
+        if st.button("New", use_container_width=True):
+            st.session_state.messages = [
+                {"role": "assistant", "content": "Fresh chat started. What should we build or solve?"}
+            ]
+            st.session_state.pending_prompt = ""
+            st.rerun()
+    with right:
+        st.download_button(
+            "Export",
+            data=transcript_as_markdown(st.session_state.messages),
+            file_name="sekta-gold-ai-chat.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
 
-def main():
-    with st.sidebar:
-        st.markdown("### 🛡️ Cyber Shield")
-        st.caption("Defensive operations console")
-        choice = st.radio("Tool", list(NAV.keys()), label_visibility="collapsed")
-        st.divider()
-        st.caption("Defensive-only · no offensive capability")
-        st.caption(f"UTC {utcnow()}")
-    NAV[choice]()
+    st.markdown('<p class="small-note">Secrets supported: GROQ_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, TAVILY_API_KEY.</p>', unsafe_allow_html=True)
 
+provider_name = "Demo" if provider == "demo" else PROVIDERS[provider]["label"]
+provider_state = "Ready" if provider != "demo" and provider_api_key(provider, pasted_key) else ("Demo" if provider == "demo" else "Needs key")
+file_count = len(uploaded_files or [])
+message_count = len(st.session_state.messages)
+web_state = "On" if enable_web else "Off"
 
-if __name__ == "__main__":
-    main()
+st.markdown(
+    f"""
+<div class="top-shell">
+  <div class="logo-row">
+    <div class="logo-mark">⚜️</div>
+    <div>
+      <div class="kicker">{APP_VERSION}</div>
+      <div style="color:#B8B8BF; font-weight:700;">Premium Streamlit AI assistant</div>
+    </div>
+  </div>
+  <h1 class="hero-title"><span class="gold-gradient">SEKTA GOLD</span><br/>AI Command Center</h1>
+  <div class="hero-subtitle">A completely redesigned chatbot dashboard for conversations, file analysis, code help, research, and strategy.</div>
+</div>
+<div class="status-grid">
+  <div class="status-card"><span>Provider</span><b>{provider_name}</b></div>
+  <div class="status-card"><span>Status</span><b>{provider_state}</b></div>
+  <div class="status-card"><span>Files</span><b>{file_count}</b></div>
+  <div class="status-card"><span>Messages</span><b>{message_count}</b></div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+quick_cols = st.columns(4)
+for col, sample in zip(quick_cols, SAMPLE_PROMPTS):
+    with col:
+        st.markdown(
+            f"""
+<div class="prompt-card">
+  <h4>{sample.split('.')[0]}</h4>
+  <p>Click below to start this workflow.</p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+        if st.button("Use prompt", key=f"sample_{sample}", use_container_width=True):
+            queue_prompt(sample)
+            st.rerun()
+
+if uploaded_files:
+    st.success("Attached for the next message: " + ", ".join(file.name for file in uploaded_files[:6]))
+
+st.markdown('<div class="chat-frame">', unsafe_allow_html=True)
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+st.markdown('</div>', unsafe_allow_html=True)
+
+chat_prompt = st.chat_input("Message SEKTA GOLD AI...")
+prompt = st.session_state.pending_prompt or chat_prompt
+st.session_state.pending_prompt = ""
+
+if prompt:
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    file_context = build_file_context(uploaded_files or [])
+    search_context = ""
+    sources: list[dict[str, str]] = []
+
+    if enable_web:
+        with st.status("Collecting web context...", expanded=False):
+            search_context, sources = web_context(prompt)
+
+    context_blocks = []
+    if file_context:
+        context_blocks.append("Uploaded file context:\n" + trim_text(file_context, 20000))
+    if search_context:
+        context_blocks.append(trim_text(search_context, 10000))
+
+    enriched_prompt = prompt
+    if context_blocks:
+        enriched_prompt = (
+            "Use this context when relevant. If using web context, cite the provided URLs.\n\n"
+            + "\n\n".join(context_blocks)
+            + "\n\nUser question:\n"
+            + prompt
+        )
+
+    model_messages = [{"role": "system", "content": system_prompt}]
+    model_messages.extend(st.session_state.messages[-12:-1])
+    model_messages.append({"role": "user", "content": enriched_prompt})
+
+    with st.chat_message("assistant"):
+        try:
+            if provider == "demo":
+                answer = demo_response(prompt, file_context, search_context)
+            else:
+                api_key = provider_api_key(provider, pasted_key)
+                if not api_key:
+                    secret_name = PROVIDERS[provider]["secret"]
+                    answer = (
+                        f"I need `{secret_name}` to call {PROVIDERS[provider]['label']}. "
+                        "Add it in Streamlit Secrets or paste a temporary key in the sidebar."
+                    )
+                else:
+                    with st.spinner(f"Thinking with {PROVIDERS[provider]['label']}..."):
+                        answer = call_chat_model(
+                            provider=provider,
+                            api_key=api_key,
+                            model=model,
+                            messages=model_messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                        )
+
+            st.markdown(answer)
+            if sources:
+                with st.expander("Web sources"):
+                    for index, item in enumerate(sources, start=1):
+                        st.markdown(f"{index}. [{item.get('title', 'Untitled')}]({item.get('url', '')})")
+        except Exception as exc:
+            answer = f"Sorry, I hit an error: `{exc}`"
+            st.error(answer)
+
+    st.session_state.messages.append({"role": "assistant", "content": answer})
